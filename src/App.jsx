@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+// v1.0.2 - Final version with revenue splitting logic
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { 
@@ -10,10 +11,9 @@ import {
     doc, 
     updateDoc,
     query,
+    writeBatch,
     setLogLevel
 } from 'firebase/firestore';
-
-// --- Firebase Configuration is now handled automatically by the environment ---
 
 // --- Helper Components & Icons (as SVGs to keep it in one file) ---
 
@@ -25,6 +25,12 @@ const EditIcon = () => (
 );
 const DeleteIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+);
+const CheckIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-green-400" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+);
+const XIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-red-500" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
 );
 const LoadingSpinner = () => (
   <div className="flex justify-center items-center h-64">
@@ -40,7 +46,6 @@ const Card = ({ title, children, className = '' }) => (
 
 
 // --- Main Application ---
-// v1.0.1 - Force cache bust
 export default function App() {
     const [view, setView] = useState('dashboard');
     const [db, setDb] = useState(null);
@@ -52,11 +57,26 @@ export default function App() {
     const [expenses, setExpenses] = useState([]);
     const [vendors, setVendors] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
+    
+    const [dateFilter, setDateFilter] = useState({ type: 'all', startDate: '', endDate: '' });
+    const [reportTypeFilter, setReportTypeFilter] = useState('all');
+
 
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'one-kitchen-tracker';
 
     // 1. Initialize Firebase and Auth State
     useEffect(() => {
+        // Load external scripts for PDF and Excel generation
+        const pdfScript = document.createElement('script');
+        pdfScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+        pdfScript.async = true;
+        document.body.appendChild(pdfScript);
+
+        const excelScript = document.createElement('script');
+        excelScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        excelScript.async = true;
+        document.body.appendChild(excelScript);
+
         if (typeof __firebase_config === 'undefined') {
             console.error("Firebase config is not available.");
             setIsAuthReady(true);
@@ -95,7 +115,11 @@ export default function App() {
                 }
             });
 
-            return () => unsubscribe();
+            return () => {
+                unsubscribe();
+                document.body.removeChild(pdfScript);
+                document.body.removeChild(excelScript);
+            };
         } catch (error) {
             console.error("Firebase initialization failed:", error);
             setIsAuthReady(true);
@@ -106,11 +130,39 @@ export default function App() {
     // 2. Fetch data once user is authenticated
     useEffect(() => {
         if (!isAuthReady || !db || !userId) return;
+        
+        const prepopulateVendors = async () => {
+            const initialVendors = [
+                { name: 'Beta Security', category: 'Professional Services', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'D&L Meats', category: 'COGS', contactPerson: 'David Lo', email: '', phoneNumber: '626-945-8998', accountNumber: '' },
+                { name: 'Employers', category: 'Insurance', contactPerson: '', email: '', phoneNumber: '', accountNumber: 'EIG 2649761 06' },
+                { name: 'Hing Lee Farms', category: 'COGS', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'Geico', category: 'Insurance', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'Tom Quan', category: 'Rent', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'SCE', category: 'Utilities', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'SJ Distributors', category: 'COGS', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'So Cal Gas', category: 'Utilities', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'Sure Payroll', category: 'Professional Services', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'Tesla', category: 'Utilities', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'Tesla Insurance', category: 'Insurance', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+                { name: 'Wing Sing', category: 'COGS', contactPerson: '', email: '', phoneNumber: '', accountNumber: '' },
+            ];
+
+            const vendorsCollectionRef = collection(db, `/artifacts/${appId}/users/${userId}/vendors`);
+            const batch = writeBatch(db);
+            initialVendors.forEach(vendor => {
+                const docRef = doc(vendorsCollectionRef);
+                batch.set(docRef, vendor);
+            });
+            await batch.commit();
+            console.log("Initial vendors have been prepopulated.");
+        };
+
 
         const collectionsMeta = {
             revenues: { setter: setRevenues, ref: collection(db, `/artifacts/${appId}/users/${userId}/revenues`) },
             expenses: { setter: setExpenses, ref: collection(db, `/artifacts/${appId}/users/${userId}/expenses`) },
-            vendors: { setter: setVendors, ref: collection(db, `/artifacts/${appId}/users/${userId}/vendors`) },
+            vendors: { setter: setVendors, ref: collection(db, `/artifacts/${appId}/users/${userId}/vendors`), prepopulate: prepopulateVendors },
         };
 
         const collectionNames = Object.keys(collectionsMeta);
@@ -123,19 +175,26 @@ export default function App() {
         }
 
         const unsubscribes = collectionNames.map(name => {
-            const { setter, ref } = collectionsMeta[name];
+            const { setter, ref, prepopulate } = collectionsMeta[name];
             const q = query(ref);
             return onSnapshot(q, (snapshot) => {
+                if (snapshot.empty && prepopulate) {
+                    prepopulate();
+                }
+
                 const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 
                 if (name === 'vendors') {
                     setter(data.sort((a,b) => a.name.localeCompare(b.name)));
                 } else {
-                    setter(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
+                     setter(data.sort((a, b) => (b.date || "").localeCompare(a.date || "")));
                 }
 
-                loadedCollections++;
-                if (loadedCollections === totalCollections) {
+                if (name === Object.keys(collectionsMeta)[loadedCollections]) {
+                    loadedCollections++;
+                }
+                
+                if (loadedCollections >= totalCollections) {
                     setIsLoading(false);
                 }
                 
@@ -148,13 +207,77 @@ export default function App() {
         return () => unsubscribes.forEach(unsub => unsub());
     }, [isAuthReady, db, userId, appId]);
 
-    // Derived state for dashboard
+    // 3. Filter data based on dateFilter and reportTypeFilter state
+    const { filteredRevenues, filteredExpenses } = useMemo(() => {
+        const filterByDate = (data) => {
+            if (dateFilter.type === 'all' || !data) return data;
+            
+            let start, end;
+            const now = new Date();
+
+            switch(dateFilter.type) {
+                case 'thisMonth':
+                    start = new Date(now.getFullYear(), now.getMonth(), 1);
+                    end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+                    break;
+                case 'lastMonth':
+                    start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                    end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+                    break;
+                case 'lastQuarter':
+                    const currentQuarter = Math.floor(now.getMonth() / 3);
+                    const startMonth = currentQuarter * 3 - 3;
+                    start = new Date(now.getFullYear(), startMonth, 1);
+                    end = new Date(now.getFullYear(), startMonth + 3, 0, 23, 59, 59);
+                    break;
+                case 'custom':
+                    if (!dateFilter.startDate || !dateFilter.endDate) return data;
+                    start = new Date(dateFilter.startDate);
+                    end = new Date(dateFilter.endDate);
+                    start.setHours(0, 0, 0, 0);
+                    end.setHours(23, 59, 59, 999);
+                    break;
+                default: // Handles trailing months like '2025-08'
+                    const [year, month] = dateFilter.type.split('-').map(Number);
+                    start = new Date(year, month - 1, 1);
+                    end = new Date(year, month, 0, 23, 59, 59);
+                    break;
+            }
+
+            return data.filter(item => {
+                if (!item.date) return false;
+                const itemDateStr = item.date.length === 7 ? `${item.date}-02` : item.date;
+                const itemDate = new Date(itemDateStr);
+                return itemDate >= start && itemDate <= end;
+            });
+        };
+
+        const filterByReportType = (data) => {
+            if (reportTypeFilter === 'all' || !data) return data;
+             return data.filter(item => {
+                if (reportTypeFilter === 'reportableOnly') {
+                    return item.reportable !== false; // Includes true and undefined
+                }
+                if (reportTypeFilter === 'nonReportableOnly') {
+                    return item.reportable === false;
+                }
+                return true;
+             });
+        };
+
+        return {
+            filteredRevenues: filterByReportType(filterByDate(revenues)),
+            filteredExpenses: filterByReportType(filterByDate(expenses))
+        };
+    }, [revenues, expenses, dateFilter, reportTypeFilter]);
+
+    // Derived state for dashboard totals (already uses filtered data)
     const totals = useMemo(() => {
-        const totalRevenue = revenues.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
-        const totalExpenses = expenses.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
+        const totalRevenue = filteredRevenues.reduce((sum, item) => sum + parseFloat(item.checkAmount || 0) + parseFloat(item.cashAmount || 0), 0);
+        const totalExpenses = filteredExpenses.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
         const netProfit = totalRevenue - totalExpenses;
         return { totalRevenue, totalExpenses, netProfit };
-    }, [revenues, expenses]);
+    }, [filteredRevenues, filteredExpenses]);
 
     const formatCurrency = (amount) => {
         const value = typeof amount === 'string' ? parseFloat(amount) : amount;
@@ -162,34 +285,81 @@ export default function App() {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
     };
 
+    const displayDateRange = useMemo(() => {
+        if (dateFilter.type === 'all') return null;
+        
+        const formatDate = (date) => new Date(date).toLocaleDateString('en-US');
+
+        let start, end;
+        const now = new Date();
+
+        switch (dateFilter.type) {
+            case 'thisMonth':
+                start = new Date(now.getFullYear(), now.getMonth(), 1);
+                end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+                break;
+            case 'lastMonth':
+                start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                end = new Date(now.getFullYear(), now.getMonth(), 0);
+                break;
+            case 'lastQuarter':
+                 const currentQuarter = Math.floor(now.getMonth() / 3);
+                 const startMonth = currentQuarter * 3 - 3;
+                 start = new Date(now.getFullYear(), startMonth, 1);
+                 end = new Date(now.getFullYear(), startMonth + 3, 0);
+                break;
+            case 'custom':
+                 if (!dateFilter.startDate || !dateFilter.endDate) return 'Custom Period';
+                 start = dateFilter.startDate;
+                 end = dateFilter.endDate;
+                break;
+            default: // Trailing months
+                const [year, month] = dateFilter.type.split('-').map(Number);
+                start = new Date(year, month - 1, 1);
+                end = new Date(year, month, 0);
+                break;
+        }
+        return `${formatDate(start)} - ${formatDate(end)}`;
+    }, [dateFilter]);
+
     const MainContent = () => {
         if (!isAuthReady || isLoading) return <LoadingSpinner />;
         
-        switch (view) {
-            case 'dashboard':
-                return <DashboardView totals={totals} revenues={revenues} expenses={expenses} formatCurrency={formatCurrency} />;
-            case 'revenue':
-                return <CrudView title="Revenue" data={revenues} db={db} userId={userId} appId={appId} collectionName="revenues" fields={['description', 'amount', 'date']} formatCurrency={formatCurrency} vendors={vendors} />;
-            case 'expenses':
-                return <CrudView title="Expenses" data={expenses} db={db} userId={userId} appId={appId} collectionName="expenses" fields={['description', 'amount', 'date', 'vendorId']} formatCurrency={formatCurrency} vendors={vendors} />;
-            case 'vendors':
-                return <CrudView title="Vendors" data={vendors} db={db} userId={userId} appId={appId} collectionName="vendors" fields={['name', 'contact', 'email']} formatCurrency={formatCurrency} />;
-            default:
-                return <div>Select a view</div>;
-        }
+        return (
+            <div>
+                {
+                    {
+                        'dashboard': <DashboardView totals={totals} revenues={filteredRevenues} expenses={filteredExpenses} formatCurrency={formatCurrency} vendors={vendors} displayDateRange={displayDateRange} />,
+                        'revenue': <CrudView title="Revenue" data={filteredRevenues} db={db} userId={userId} appId={appId} collectionName="revenues" fields={['source', 'date', 'checkAmount', 'cashAmount', 'reportable']} formatCurrency={formatCurrency} />,
+                        'expenses': <CrudView title="Expenses" data={filteredExpenses} db={db} userId={userId} appId={appId} collectionName="expenses" fields={['date', 'vendorId', 'category', 'amount', 'paymentType', 'reportable', 'description']} formatCurrency={formatCurrency} vendors={vendors} />,
+                        'vendors': <CrudView title="Vendors" data={vendors} db={db} userId={userId} appId={appId} collectionName="vendors" fields={['name', 'category', 'contactPerson', 'email', 'phoneNumber', 'accountNumber']} formatCurrency={formatCurrency} />,
+                    }[view] || <div>Select a view</div>
+                }
+            </div>
+        )
     };
+    
+    const showFilter = ['dashboard', 'revenue', 'expenses'].includes(view);
 
     return (
         <div className="bg-gray-900 text-gray-200 min-h-screen font-sans">
             <div className="w-full bg-gray-800/30 backdrop-blur-xl border-b border-gray-700/50 sticky top-0 z-10">
-                <header className="container mx-auto px-4 md:px-8 py-4 flex flex-col md:flex-row justify-between items-center">
-                    <h1 className="text-3xl font-bold text-white">One Kitchen <span className="text-indigo-400">Tracker</span></h1>
-                    <nav className="mt-4 md:mt-0 flex items-center bg-gray-900/50 border border-gray-700/50 rounded-full px-2 py-1">
-                        <NavButton text="Dashboard" viewName="dashboard" currentView={view} setView={setView} />
-                        <NavButton text="Revenue" viewName="revenue" currentView={view} setView={setView} />
-                        <NavButton text="Expenses" viewName="expenses" currentView={view} setView={setView} />
-                        <NavButton text="Vendors" viewName="vendors" currentView={view} setView={setView} />
-                    </nav>
+                <header className="container mx-auto px-4 md:px-8 py-4 flex flex-col items-start md:flex-row md:justify-between md:items-center gap-4">
+                    <div className="w-full md:w-auto">
+                        <h1 className="text-3xl font-bold text-white flex-shrink-0">One Kitchen <span className="text-indigo-400">Tracker</span></h1>
+                         {showFilter && displayDateRange && <p className="text-sm text-gray-400 mt-1">{displayDateRange}</p>}
+                    </div>
+                    <div className="flex flex-col md:flex-row items-center gap-4 w-full">
+                        <div className="w-full md:w-auto flex-grow">
+                             {showFilter && <FilterBar dateFilter={dateFilter} onDateFilterChange={setDateFilter} reportTypeFilter={reportTypeFilter} onReportTypeFilterChange={setReportTypeFilter} />}
+                        </div>
+                        <nav className="flex items-center bg-gray-900/50 border border-gray-700/50 rounded-full px-2 py-1">
+                            <NavButton text="Dashboard" viewName="dashboard" currentView={view} setView={setView} />
+                            <NavButton text="Revenue" viewName="revenue" currentView={view} setView={setView} />
+                            <NavButton text="Expenses" viewName="expenses" currentView={view} setView={setView} />
+                            <NavButton text="Vendors" viewName="vendors" currentView={view} setView={setView} />
+                        </nav>
+                    </div>
                 </header>
             </div>
             <main className="container mx-auto p-4 md:p-8">
@@ -206,11 +376,236 @@ const NavButton = ({ text, viewName, currentView, setView }) => (
 );
 
 
+function FilterBar({ dateFilter, onDateFilterChange, reportTypeFilter, onReportTypeFilterChange }) {
+    const [customDates, setCustomDates] = useState({ 
+        startDate: dateFilter.startDate || '', 
+        endDate: dateFilter.endDate || '' 
+    });
+
+    const handleTypeChange = (e) => {
+        const type = e.target.value;
+        setCustomDates({ startDate: '', endDate: '' });
+        if (type !== 'custom') {
+            onDateFilterChange({ type, startDate: '', endDate: '' });
+        } else {
+             onDateFilterChange({ type, startDate: '', endDate: '' });
+        }
+    };
+
+    const handleCustomDateChange = (e) => {
+        setCustomDates(prev => ({ ...prev, [e.target.name]: e.target.value }));
+    };
+    
+    const applyCustomFilter = () => {
+        if (customDates.startDate && customDates.endDate) {
+            onDateFilterChange({ type: 'custom', ...customDates });
+        }
+    };
+
+    const trailingMonths = useMemo(() => {
+        const months = [];
+        let date = new Date();
+        for (let i = 0; i < 13; i++) { // Changed to 13 months
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            months.push({
+                value: `${year}-${month}`,
+                label: date.toLocaleString('default', { month: 'long', year: 'numeric' })
+            });
+            date.setMonth(date.getMonth() - 1);
+        }
+        return months;
+    }, []);
+
+    return (
+        <div className="flex flex-col gap-2 w-full">
+            <div className="flex flex-col md:flex-row gap-2 items-center">
+                 <select 
+                    value={dateFilter.type} 
+                    onChange={handleTypeChange}
+                    className="shadow-inner appearance-none border rounded w-full md:w-auto py-2 px-3 bg-gray-700/80 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                >
+                    <option value="all">All Time</option>
+                    <option value="thisMonth">This Month</option>
+                    <option value="lastMonth">Last Month</option>
+                    <option value="lastQuarter">Last Quarter</option>
+                    <option value="custom">Custom Period</option>
+                    <option disabled>──────────</option>
+                    {trailingMonths.map(m => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                </select>
+                <select 
+                    value={reportTypeFilter} 
+                    onChange={(e) => onReportTypeFilterChange(e.target.value)}
+                    className="shadow-inner appearance-none border rounded w-full md:w-auto py-2 px-3 bg-gray-700/80 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                 >
+                    <option value="reportableOnly">Reportable Only</option>
+                    <option value="nonReportableOnly">Non-Reportable Only</option>
+                    <option value="all">All</option>
+                </select>
+            </div>
+            {dateFilter.type === 'custom' && (
+                <div className="flex flex-col md:flex-row gap-2 items-center w-full">
+                    <input 
+                        type="date" 
+                        name="startDate"
+                        value={customDates.startDate}
+                        onChange={handleCustomDateChange}
+                        className="shadow-inner appearance-none border rounded w-full md:w-auto py-2 px-3 bg-gray-700/80 border-gray-600 text-white text-sm"
+                    />
+                     <span className="text-gray-400">to</span>
+                    <input 
+                        type="date" 
+                        name="endDate"
+                        value={customDates.endDate}
+                        onChange={handleCustomDateChange}
+                        className="shadow-inner appearance-none border rounded w-full md:w-auto py-2 px-3 bg-gray-700/80 border-gray-600 text-white text-sm"
+                    />
+                    <button onClick={applyCustomFilter} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 rounded-lg w-full md:w-auto text-sm">Apply</button>
+                </div>
+            )}
+        </div>
+    );
+}
+
 // --- View Components ---
 
-function DashboardView({ totals, revenues, expenses, formatCurrency }) {
+function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, displayDateRange }) {
+    
+    const getVendorName = (vendorId) => {
+        if (!vendors || !vendorId) return 'N/A';
+        const vendor = vendors.find(v => v.id === vendorId);
+        return vendor ? vendor.name : 'Unknown Vendor';
+    };
+
+    const handlePdfDownload = () => {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+
+        doc.setFontSize(22);
+        doc.text("One Kitchen Financial Report", 105, 20, { align: 'center' });
+        doc.setFontSize(12);
+        doc.text(displayDateRange || "All Time", 105, 28, { align: 'center' });
+        
+        let y = 45;
+        
+        // Summary Section
+        doc.setFontSize(14);
+        doc.text("Summary", 14, y);
+        y += 8;
+        doc.setFontSize(12);
+        doc.text(`Total Revenue: ${formatCurrency(totals.totalRevenue)}`, 14, y);
+        y += 7;
+        doc.text(`Total Expenses: ${formatCurrency(totals.totalExpenses)}`, 14, y);
+        y += 7;
+        doc.text(`Net Profit: ${formatCurrency(totals.netProfit)}`, 14, y);
+        y += 12;
+
+        // Revenue Section
+        doc.setFontSize(16);
+        doc.text("Revenue", 14, y);
+        y += 8;
+        doc.setFontSize(10);
+        
+        const sortedRevenues = [...revenues].sort((a,b) => new Date(a.date) - new Date(b.date));
+        sortedRevenues.forEach(r => {
+            if (y > 280) { doc.addPage(); y = 20; }
+            const totalAmount = (parseFloat(r.checkAmount) || 0) + (parseFloat(r.cashAmount) || 0);
+            const line = `${r.date} | ${r.source} | Check: ${formatCurrency(r.checkAmount)} | Cash: ${formatCurrency(r.cashAmount)}`;
+            doc.text(line, 14, y);
+            doc.text(formatCurrency(totalAmount), 195, y, { align: 'right' });
+            y += 6;
+        });
+
+        y += 10;
+
+        // Expenses Section
+        doc.setFontSize(16);
+        doc.text("Expenses", 14, y);
+        y += 8;
+
+        const groupedExpenses = expenses.reduce((acc, e) => {
+            const category = e.category || 'Uncategorized';
+            if (!acc[category]) acc[category] = [];
+            acc[category].push(e);
+            return acc;
+        }, {});
+
+        Object.keys(groupedExpenses).sort().forEach(category => {
+            if (y > 280) { doc.addPage(); y = 20; }
+            y += 6;
+            doc.setFontSize(12); // Smaller font for category
+            doc.text(category, 14, y);
+            y += 7;
+            doc.setFontSize(10);
+            
+            const sortedExpenses = groupedExpenses[category].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            sortedExpenses.forEach(e => {
+                if (y > 280) { doc.addPage(); y = 20; }
+                const line = `${e.date} | ${e.description || getVendorName(e.vendorId)} | ${e.paymentType || 'N/A'}`;
+                doc.text(line, 14, y);
+                doc.text(formatCurrency(e.amount), 195, y, { align: 'right' });
+                y += 6;
+            });
+        });
+        
+        doc.save(`OneKitchen_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+    };
+
+    const handleExcelDownload = () => {
+        const wb = XLSX.utils.book_new();
+
+        // Revenue Sheet
+        const revenueData = [...revenues]
+            .sort((a, b) => new Date(a.date) - new Date(b.date))
+            .map(r => ({
+            Date: r.date,
+            Vendor: r.source,
+            Category: 'Revenue',
+            'Pay Type': 'N/A',
+            Desc: r.source,
+            Amount: (r.checkAmount || 0) + (r.cashAmount || 0)
+        }));
+        const revenueSheet = XLSX.utils.json_to_sheet(revenueData);
+        XLSX.utils.book_append_sheet(wb, revenueSheet, "Revenue");
+
+        // Expense Sheet
+        const expenseData = [...expenses]
+            .sort((a,b) => {
+                if (a.category < b.category) return -1;
+                if (a.category > b.category) return 1;
+                return new Date(a.date) - new Date(b.date);
+            })
+            .map(e => ({
+            Date: e.date,
+            Vendor: getVendorName(e.vendorId),
+            Category: e.category,
+            'Pay Type': e.paymentType,
+            Desc: e.description,
+            Amount: e.amount || 0
+        }));
+        const expenseSheet = XLSX.utils.json_to_sheet(expenseData);
+        XLSX.utils.book_append_sheet(wb, expenseSheet, "Expenses");
+
+        const summaryData = [
+            { Category: "Total Revenue", Amount: totals.totalRevenue },
+            { Category: "Total Expenses", Amount: totals.totalExpenses },
+            { Category: "Net Profit", Amount: totals.netProfit },
+        ];
+        const summarySheet = XLSX.utils.json_to_sheet(summaryData);
+        XLSX.utils.book_append_sheet(wb, summarySheet, "Summary");
+        
+        XLSX.writeFile(wb, `OneKitchen_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
+    };
+
     return (
         <div className="space-y-8">
+            <div className="flex justify-end gap-4">
+                 <button onClick={handlePdfDownload} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download PDF</button>
+                 <button onClick={handleExcelDownload} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download Excel</button>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <Card title="Total Revenue">
                     <p className="text-4xl font-bold text-green-400">{formatCurrency(totals.totalRevenue)}</p>
@@ -225,22 +620,31 @@ function DashboardView({ totals, revenues, expenses, formatCurrency }) {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                  <Card title="Recent Revenue">
                     <ul className="space-y-3">
-                        {revenues.length > 0 ? revenues.slice(0, 5).map(r => (
-                            <li key={r.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
-                               <span className="text-gray-300">{r.description}</span>
-                               <span className="text-green-400 font-semibold">{formatCurrency(r.amount)}</span>
-                            </li>
-                        )) : <p className="text-gray-500">No revenue entries yet.</p>}
+                        {revenues.length > 0 ? revenues.slice(0, 5).map(r => {
+                            const totalAmount = (parseFloat(r.checkAmount) || 0) + (parseFloat(r.cashAmount) || 0);
+                             return (
+                                <li key={r.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
+                                   <div>
+                                       <p className="text-gray-300">{r.source}</p>
+                                       <p className="text-xs text-gray-500">{r.date}</p>
+                                   </div>
+                                   <span className="text-green-400 font-semibold">{formatCurrency(totalAmount)}</span>
+                                </li>
+                             );
+                        }) : <p className="text-gray-500">No revenue entries for this period.</p>}
                     </ul>
                  </Card>
                  <Card title="Recent Expenses">
                     <ul className="space-y-3">
                          {expenses.length > 0 ? expenses.slice(0, 5).map(e => (
                             <li key={e.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
-                               <span className="text-gray-300">{e.description}</span>
+                               <div>
+                                   <p className="text-gray-300">{e.description || `${getVendorName(e.vendorId)} (${e.category})`}</p>
+                                   <p className="text-xs text-gray-500">{e.date}</p>
+                               </div>
                                <span className="text-red-400 font-semibold">{formatCurrency(e.amount)}</span>
                             </li>
-                        )) : <p className="text-gray-500">No expense entries yet.</p>}
+                        )) : <p className="text-gray-500">No expense entries for this period.</p>}
                     </ul>
                  </Card>
             </div>
@@ -253,28 +657,213 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const [editingItem, setEditingItem] = useState(null);
     const [formData, setFormData] = useState({});
     const [itemToDelete, setItemToDelete] = useState(null);
+    const [addMode, setAddMode] = useState('single'); // 'single', 'multiple', 'wages'
+    const [expenseRows, setExpenseRows] = useState([]);
+    const [payPeriods, setPayPeriods] = useState([]);
+
+    const getInitialFormData = (mode) => {
+        const initialData = fields.reduce((acc, field) => ({ ...acc, [field]: '' }), {});
+        if (fields.includes('reportable')) {
+            initialData.reportable = true;
+        }
+        if (fields.includes('date')) {
+            const now = new Date();
+            initialData.date = new Date().toISOString().split('T')[0];
+        }
+        if (mode === 'wages') {
+            initialData.category = 'Wages';
+        }
+        return initialData;
+    }
+
+    useEffect(() => {
+        if (collectionName === 'expenses') {
+             const generatePayPeriods = () => {
+                const periods = [];
+                const today = new Date();
+                let lastSunday = new Date(today);
+                lastSunday.setDate(today.getDate() - today.getDay());
+                lastSunday.setHours(12, 0, 0, 0); // Use noon to avoid timezone rollover issues
+
+                for (let i = 0; i < 13; i++) { // 13 periods = approx 6 months
+                    const endDate = new Date(lastSunday);
+                    const startDate = new Date(lastSunday);
+                    startDate.setDate(startDate.getDate() - 13);
+
+                    const formatDate = (date) => `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}/${date.getFullYear().toString().slice(-2)}`;
+
+                    const label = `${formatDate(startDate)}-${formatDate(endDate)}`;
+                    const value = endDate.toISOString().split('T')[0];
+
+                    periods.push({ label, value });
+                    lastSunday.setDate(lastSunday.getDate() - 14);
+                }
+                return periods;
+            };
+            setPayPeriods(generatePayPeriods());
+        }
+    }, [collectionName]);
 
     useEffect(() => {
         if (editingItem) {
-            setFormData(editingItem);
+            setAddMode('single');
+            const itemData = { ...editingItem };
+            if (fields.includes('reportable') && typeof itemData.reportable === 'undefined') {
+                itemData.reportable = true;
+            }
+            setFormData(itemData);
             setShowForm(true);
         } else {
-            const initialData = fields.reduce((acc, field) => ({ ...acc, [field]: '' }), {});
-            if (fields.includes('date')) initialData.date = new Date().toISOString().split('T')[0];
-            setFormData(initialData);
+             setFormData(getInitialFormData(addMode));
+             if (addMode === 'multiple') {
+                setExpenseRows(Array(10).fill().map(() => getInitialFormData('multiple')));
+             }
         }
-    }, [editingItem, fields]);
+    }, [editingItem, fields, collectionName, showForm]); // Rerun when form is opened
     
     const handleInputChange = (e) => {
-        setFormData({ ...formData, [e.target.name]: e.target.value });
+        const { name, value, type, checked } = e.target;
+        
+        let newFormData = { ...formData, [name]: type === 'checkbox' ? checked : value };
+
+        if (name === 'vendorId' && collectionName === 'expenses' && vendors) {
+            const selectedVendor = vendors.find(v => v.id === value);
+            if (selectedVendor) {
+                newFormData.category = selectedVendor.category || '';
+            } else {
+                newFormData.category = '';
+            }
+        }
+        setFormData(newFormData);
+    };
+
+     const handleMultipleInputChange = (index, e) => {
+        const { name, value, type, checked } = e.target;
+        const newRows = [...expenseRows];
+        newRows[index][name] = type === 'checkbox' ? checked : value;
+
+        if (name === 'vendorId' && vendors) {
+            const selectedVendor = vendors.find(v => v.id === value);
+            const vendorCategory = selectedVendor ? selectedVendor.category : '';
+            // Cascade vendor selection to all other rows
+            const updatedRows = newRows.map(row => ({
+                ...row,
+                vendorId: value,
+                category: vendorCategory
+            }));
+            setExpenseRows(updatedRows);
+        } else {
+            setExpenseRows(newRows);
+        }
+    };
+
+    const addExpenseRow = () => {
+        setExpenseRows([...expenseRows, getInitialFormData('multiple')]);
+    };
+
+    const removeExpenseRow = (index) => {
+        const newRows = expenseRows.filter((_, i) => i !== index);
+        setExpenseRows(newRows);
     };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         if (!db || !userId) return;
 
+        if (collectionName === 'expenses' && addMode === 'wages' && !editingItem) {
+            const { payPeriod, payrollAmount, payrollTax, cash } = formData;
+            const payrollVendor = vendors.find(v => v.name === 'Sure Payroll');
+            const payrollVendorId = payrollVendor ? payrollVendor.id : null;
+
+            if (!payPeriod || (!payrollAmount && !payrollTax && !cash)) {
+                console.error("Pay period and at least one amount are required.");
+                return;
+            }
+            
+            const selectedPeriod = payPeriods.find(p => p.value === payPeriod);
+            const periodLabel = selectedPeriod ? selectedPeriod.label : '';
+
+            const batch = writeBatch(db);
+            const expensesCollection = collection(db, `/artifacts/${appId}/users/${userId}/expenses`);
+
+            if (parseFloat(payrollAmount || 0) > 0) {
+                const docRef = doc(expensesCollection);
+                batch.set(docRef, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(payrollAmount), paymentType: 'Bank Transfer', reportable: true, description: `Pay Period: ${periodLabel}` });
+            }
+            if (parseFloat(payrollTax || 0) > 0) {
+                const docRef = doc(expensesCollection);
+                batch.set(docRef, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(payrollTax), paymentType: 'Bank Transfer', reportable: true, description: `Payroll Tax: ${periodLabel}` });
+            }
+            if (parseFloat(cash || 0) > 0) {
+                 const docRef = doc(expensesCollection);
+                batch.set(docRef, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(cash), paymentType: 'Cash', reportable: false, description: `Cash Payroll: ${periodLabel}` });
+            }
+            
+            try {
+                await batch.commit();
+                closeForm();
+            } catch (error) {
+                console.error("Error saving wage entries:", error);
+            }
+            return;
+        }
+
+
+        if (collectionName === 'expenses' && addMode === 'multiple' && !editingItem) {
+            const batch = writeBatch(db);
+            const expensesCollection = collection(db, `/artifacts/${appId}/users/${userId}/expenses`);
+            expenseRows.forEach(row => {
+                 if (row.amount && row.paymentType) { // Validation for amount and payment type
+                    const docRef = doc(expensesCollection);
+                    const dataToSave = {
+                        ...row,
+                        amount: parseFloat(row.amount || 0),
+                        reportable: !!row.reportable,
+                    };
+                    batch.set(docRef, dataToSave);
+                 }
+            });
+            try {
+                await batch.commit();
+                closeForm();
+            } catch (error) {
+                console.error("Error saving multiple expenses: ", error);
+            }
+            return;
+        }
+
+        if (collectionName === 'revenues' && !editingItem) {
+            const { source, date } = formData;
+            const checkAmount = parseFloat(formData.checkAmount || 0);
+            const cashAmount = parseFloat(formData.cashAmount || 0);
+            const operations = [];
+
+            if (checkAmount > 0) {
+                operations.push(addDoc(collection(db, `/artifacts/${appId}/users/${userId}/${collectionName}`), {
+                    source, date, checkAmount, cashAmount: 0, reportable: true
+                }));
+            }
+            if (cashAmount > 0) {
+                operations.push(addDoc(collection(db, `/artifacts/${appId}/users/${userId}/${collectionName}`), {
+                    source, date, checkAmount: 0, cashAmount, reportable: false
+                }));
+            }
+            try {
+                await Promise.all(operations);
+                closeForm();
+            } catch (error) {
+                console.error("Error creating revenue entries: ", error);
+            }
+            return; 
+        }
+
         const dataToSave = { ...formData };
-        if (dataToSave.amount) dataToSave.amount = parseFloat(dataToSave.amount);
+        if (dataToSave.amount) dataToSave.amount = parseFloat(dataToSave.amount || 0);
+        if (dataToSave.checkAmount) dataToSave.checkAmount = parseFloat(dataToSave.checkAmount || 0);
+        if (dataToSave.cashAmount) dataToSave.cashAmount = parseFloat(dataToSave.cashAmount || 0);
+        if (fields.includes('reportable')) {
+            dataToSave.reportable = !!dataToSave.reportable;
+        }
 
         try {
             if (editingItem) {
@@ -288,7 +877,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             console.error("Error saving document: ", error);
         }
     };
-
+    
     const handleDelete = (id) => {
         setItemToDelete(id);
     };
@@ -308,14 +897,20 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         setItemToDelete(null);
     };
 
-    const openForm = (item = null) => {
+    const openForm = (item = null, mode = 'single') => {
         setEditingItem(item);
+        const effectiveMode = item ? 'single' : mode;
+        setAddMode(effectiveMode);
+        if (effectiveMode === 'multiple') {
+            setExpenseRows(Array(10).fill().map(() => getInitialFormData('multiple')));
+        }
         setShowForm(true);
     };
 
     const closeForm = () => {
         setShowForm(false);
         setEditingItem(null);
+        setExpenseRows([]); // Reset multiple rows form
     };
 
     const getVendorName = (vendorId) => {
@@ -323,66 +918,335 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         const vendor = vendors.find(v => v.id === vendorId);
         return vendor ? vendor.name : 'Unknown Vendor';
     };
+    
+    const getCategoryName = (item) => {
+        if(collectionName === 'expenses' && item.vendorId && !item.category) {
+            const vendor = vendors.find(v => v.id === item.vendorId);
+            return vendor ? vendor.category : 'N/A';
+        }
+        return item.category || 'N/A';
+    }
+
+    const multipleExpensesTotal = useMemo(() => {
+        return expenseRows.reduce((sum, row) => sum + parseFloat(row.amount || 0), 0);
+    }, [expenseRows]);
+
+    const paymentPercentages = useMemo(() => {
+        if (multipleExpensesTotal === 0) {
+            return { check: 0, cash: 0 };
+        }
+        const checkTotal = expenseRows
+            .filter(row => row.paymentType === 'Check')
+            .reduce((sum, row) => sum + parseFloat(row.amount || 0), 0);
+        const cashTotal = expenseRows
+            .filter(row => row.paymentType === 'Cash')
+            .reduce((sum, row) => sum + parseFloat(row.amount || 0), 0);
+        
+        return {
+            check: (checkTotal / multipleExpensesTotal) * 100,
+            cash: (cashTotal / multipleExpensesTotal) * 100,
+        };
+    }, [expenseRows, multipleExpensesTotal]);
+
+
+    const renderField = (field, customData, onChangeCallback, index) => {
+        const data = customData || formData;
+        const onChange = onChangeCallback || handleInputChange;
+        const fieldId = `${field}-${index}`;
+
+        const getRequiredStatus = (f) => {
+            if (collectionName === 'vendors') return ['name', 'category'].includes(f);
+            if(collectionName === 'expenses') return ['date', 'vendorId', 'category', 'amount', 'paymentType'].includes(f);
+            if (['checkAmount', 'cashAmount', 'amount'].includes(f)) return false;
+            return true; 
+        };
+
+        const commonProps = {
+            name: field,
+            id: fieldId,
+            onChange: onChange,
+            className: "shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500",
+        };
+    
+        switch(field) {
+             case 'reportable':
+                return (
+                    <div className="flex items-center justify-center h-full">
+                        <input type="checkbox" id={fieldId} name={field} checked={!!data[field]} onChange={onChange} className="h-5 w-5 bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded" />
+                    </div>
+                );
+            case 'source':
+                return (
+                    <select {...commonProps} value={data[field] || ''} required>
+                        <option value="">Select Source</option>
+                        <option value="DFC-Hacienda Hts">DFC-Hacienda Hts</option>
+                        <option value="DFC-Rosemead">DFC-Rosemead</option>
+                    </select>
+                );
+            case 'paymentType':
+                 return (
+                    <select {...commonProps} value={data[field] || ''}>
+                        <option value="">Select Type</option>
+                        <option value="Check">Check</option>
+                        <option value="Cash">Cash</option>
+                        <option value="Bank Transfer">Bank Transfer</option>
+                        <option value="CC">CC</option>
+                    </select>
+                );
+            case 'category':
+                const isWages = addMode === 'wages' && !editingItem;
+                return (
+                    <select {...commonProps} value={data[field] || ''} disabled={isWages} required={getRequiredStatus(field)}>
+                        <option value="">Select Category</option>
+                        <option value="Wages">Wages</option>
+                        <option value="COGS">COGS</option>
+                        <option value="Rent">Rent</option>
+                        <option value="Utilities">Utilities</option>
+                        <option value="General Expense">General Expense</option>
+                        <option value="Insurance">Insurance</option>
+                        <option value="Maintenance & Repair">Maintenance & Repair</option>
+                        <option value="Fees & Licenses">Fees & Licenses</option>
+                        <option value="Professional Services">Professional Services</option>
+                        <option value="Supplies">Supplies</option>
+                    </select>
+                );
+            case 'vendorId':
+                 if (addMode === 'wages' && !editingItem) return null;
+                 return (
+                    <select {...commonProps} value={data[field] || ''} required={getRequiredStatus(field)}>
+                        <option value="">Select Vendor</option>
+                        {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>
+                );
+            case 'date':
+                if (collectionName === 'revenues') {
+                    return <input type="month" {...commonProps} value={data[field] || ''} required />;
+                }
+                return <input type="date" {...commonProps} value={data[field] || ''} required />;
+            case 'checkAmount':
+            case 'cashAmount':
+            case 'amount':
+                return <input type="number" step="0.01" {...commonProps} value={data[field] || ''} />;
+            case 'email':
+                return <input type="email" {...commonProps} value={data[field] || ''} />;
+            case 'phoneNumber':
+                return <input type="tel" {...commonProps} value={data[field] || ''} />;
+            default:
+                return <input type="text" {...commonProps} value={data[field] || ''} />;
+        }
+    }
+
+    const renderFormContent = () => {
+        if (addMode === 'multiple' && collectionName === 'expenses' && !editingItem) {
+            return (
+                 <form onSubmit={handleSubmit}>
+                    <div className="overflow-x-auto max-h-[60vh]">
+                        <table className="w-full text-left table-auto">
+                            <thead className="sticky top-0 bg-gray-800">
+                                <tr className="border-b border-gray-700/50">
+                                    <th className="p-2 text-sm font-semibold text-gray-400">Date</th>
+                                    <th className="p-2 text-sm font-semibold text-gray-400">Vendor</th>
+                                    <th className="p-2 text-sm font-semibold text-gray-400">Category</th>
+                                    <th className="p-2 text-sm font-semibold text-gray-400">Amount</th>
+                                    <th className="p-2 text-sm font-semibold text-gray-400">Payment</th>
+                                    <th className="p-2 text-sm font-semibold text-gray-400 text-center">Reportable</th>
+                                    <th className="p-2 text-sm font-semibold text-gray-400"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {expenseRows.map((row, index) => (
+                                    <tr key={index} className="border-b border-gray-700/50">
+                                        <td className="p-1">{renderField('date', row, (e) => handleMultipleInputChange(index, e), index)}</td>
+                                        <td className="p-1">{renderField('vendorId', row, (e) => handleMultipleInputChange(index, e), index)}</td>
+                                        <td className="p-1">{renderField('category', row, (e) => handleMultipleInputChange(index, e), index)}</td>
+                                        <td className="p-1">{renderField('amount', row, (e) => handleMultipleInputChange(index, e), index)}</td>
+                                        <td className="p-1">{renderField('paymentType', row, (e) => handleMultipleInputChange(index, e), index)}</td>
+                                        <td className="p-1">{renderField('reportable', row, (e) => handleMultipleInputChange(index, e), index)}</td>
+                                        <td className="p-1">
+                                            <button type="button" onClick={() => removeExpenseRow(index)} className="text-red-500 hover:text-red-400">
+                                                <XIcon />
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div className="mt-4 flex justify-between items-center">
+                        <button type="button" onClick={addExpenseRow} className="text-indigo-400 hover:text-indigo-300 font-bold py-2 px-4 rounded">
+                            + Add Row
+                        </button>
+                        <div className="text-right flex items-center gap-6">
+                             <div>
+                                <span className="text-gray-400 font-semibold">% Check: </span>
+                                <span className="text-lg font-bold text-white">{paymentPercentages.check.toFixed(1)}%</span>
+                            </div>
+                            <div>
+                                <span className="text-gray-400 font-semibold">% Cash: </span>
+                                <span className="text-lg font-bold text-white">{paymentPercentages.cash.toFixed(1)}%</span>
+                            </div>
+                            <div>
+                                <span className="text-gray-400 font-semibold">Total Amount: </span>
+                                <span className="text-xl font-bold text-white">{formatCurrency(multipleExpensesTotal)}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-4 pt-4">
+                        <button type="button" onClick={closeForm} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
+                        <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">Save All</button>
+                    </div>
+                </form>
+            );
+        }
+        
+        if (addMode === 'wages' && collectionName === 'expenses' && !editingItem) {
+             return (
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="payPeriod">Pay Period</label>
+                        <select id="payPeriod" name="payPeriod" value={formData.payPeriod || ''} onChange={handleInputChange} className="shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
+                            <option value="">Select a pay period</option>
+                            {payPeriods.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                        </select>
+                    </div>
+                     <div>
+                        <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="payrollAmount">Payroll Amount</label>
+                        <input type="number" step="0.01" id="payrollAmount" name="payrollAmount" value={formData.payrollAmount || ''} onChange={handleInputChange} className="shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                    </div>
+                     <div>
+                        <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="payrollTax">Payroll Tax</label>
+                        <input type="number" step="0.01" id="payrollTax" name="payrollTax" value={formData.payrollTax || ''} onChange={handleInputChange} className="shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                    </div>
+                     <div>
+                        <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="cash">Cash</label>
+                        <input type="number" step="0.01" id="cash" name="cash" value={formData.cash || ''} onChange={handleInputChange} className="shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                    </div>
+                    <div className="flex items-center justify-end gap-4 pt-4">
+                        <button type="button" onClick={closeForm} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
+                        <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">Save</button>
+                    </div>
+                </form>
+            );
+        }
+
+
+        const currentFields = (collectionName === 'revenues' && !editingItem) 
+            ? fields.filter(f => f !== 'reportable')
+            : fields;
+
+
+        return (
+            <form onSubmit={handleSubmit} className="space-y-4">
+                {currentFields.map(field => {
+                    const fieldElement = renderField(field, formData, handleInputChange);
+                    if (!fieldElement) return null;
+                    
+                    if (field === 'reportable' && (addMode === 'single' || addMode === 'wages' || editingItem)) {
+                        return (
+                            <div key={field} className="flex items-center pt-2">
+                                 <input
+                                    type="checkbox"
+                                    id="reportable-single"
+                                    name="reportable"
+                                    checked={!!formData.reportable}
+                                    onChange={handleInputChange}
+                                    className="h-5 w-5 bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded"
+                                />
+                                <label htmlFor="reportable-single" className="ml-3 text-gray-300">Reportable</label>
+                            </div>
+                        );
+                    }
+                     if (field === 'reportable') return null; 
+
+                    return (
+                        <div key={field}>
+                            <label className="block text-gray-400 text-sm font-bold mb-2 capitalize" htmlFor={field}>
+                                {field.replace(/([A-Z])/g, ' $1').replace('Id', '')}
+                            </label>
+                            {fieldElement}
+                        </div>
+                    );
+                })}
+                <div className="flex items-center justify-end gap-4 pt-4">
+                    <button type="button" onClick={closeForm} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
+                    <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">Save</button>
+                </div>
+            </form>
+        );
+    };
 
     return (
-        <Card title={`${title} Records`}>
-            <div className="flex justify-end mb-6">
-                <button onClick={() => openForm()} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-300 shadow-md">
-                    <PlusIcon /> Add {title}
-                </button>
-            </div>
+        <>
+            <Card title={`${title} Records`}>
+                <div className="flex justify-end mb-6 gap-4">
+                    {collectionName === 'expenses' ? (
+                        <>
+                            <button onClick={() => openForm(null, 'single')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Single Expense </button>
+                            <button onClick={() => openForm(null, 'multiple')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Multiple Expenses </button>
+                            <button onClick={() => openForm(null, 'wages')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Wages </button>
+                        </>
+                    ) : (
+                        <button onClick={() => openForm()} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add {title} </button>
+                    )}
+                </div>
+
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left table-auto">
+                        <thead>
+                            <tr className="border-b border-gray-700/50">
+                                {fields.map(f => <th key={f} className="p-4 capitalize text-sm font-semibold text-gray-400">{f.replace(/([A-Z])/g, ' $1').replace('Id', '')}</th>)}
+                                <th className="p-4 text-sm font-semibold text-gray-400">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {data && data.length > 0 ? data.map(item => (
+                                <tr key={item.id} className="border-b border-gray-800 hover:bg-gray-700/20">
+                                    {fields.map(field => (
+                                        <td key={field} className="p-4 text-gray-300">
+                                            {
+                                                field === 'reportable' ? (item.reportable ? <CheckIcon /> : <XIcon />)
+                                                : (field === 'amount' || field === 'checkAmount' || field === 'cashAmount') ? formatCurrency(item[field]) 
+                                                : field === 'vendorId' ? getVendorName(item[field])
+                                                : field === 'category' ? getCategoryName(item)
+                                                : field === 'description' ? item[field]
+                                                : item[field]
+                                            }
+                                        </td>
+                                    ))}
+                                    <td className="p-4 flex gap-4 items-center">
+                                        <button onClick={() => openForm(item)} className="text-indigo-400 hover:text-indigo-300 transition-colors duration-200"><EditIcon /></button>
+                                        <button onClick={() => handleDelete(item.id)} className="text-red-500 hover:text-red-400 transition-colors duration-200"><DeleteIcon /></button>
+                                    </td>
+                                </tr>
+                            )) : (
+                                <tr>
+                                    <td colSpan={fields.length + 1} className="text-center p-8 text-gray-500">No {title.toLowerCase()} records found for this period.</td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </Card>
 
             {showForm && (
-                <div className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-center z-50 p-4">
-                    <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-md border border-gray-700">
-                        <h2 className="text-2xl font-bold mb-6 text-white">{editingItem ? 'Edit' : 'Add'} {title}</h2>
-                        <form onSubmit={handleSubmit} className="space-y-4">
-                            {fields.map(field => (
-                                <div key={field}>
-                                    <label className="block text-gray-400 text-sm font-bold mb-2 capitalize" htmlFor={field}>
-                                        {field.replace('Id', '')}
-                                    </label>
-                                    {field === 'vendorId' ? (
-                                        <select
-                                            name="vendorId"
-                                            id="vendorId"
-                                            value={formData.vendorId || ''}
-                                            onChange={handleInputChange}
-                                            className="shadow-inner appearance-none border rounded w-full py-3 px-4 bg-gray-700/50 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                        >
-                                            <option value="">Select Vendor</option>
-                                            {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                                        </select>
-                                    ) : (
-                                        <input
-                                            type={field === 'amount' ? 'number' : field === 'date' ? 'date' : field === 'email' ? 'email' : 'text'}
-                                            step={field === 'amount' ? '0.01' : undefined}
-                                            name={field}
-                                            id={field}
-                                            value={formData[field] || ''}
-                                            onChange={handleInputChange}
-                                            className="shadow-inner appearance-none border rounded w-full py-3 px-4 bg-gray-700/50 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                            required
-                                        />
-                                    )}
-                                </div>
-                            ))}
-                            <div className="flex items-center justify-end gap-4 pt-4">
-                                <button type="button" onClick={closeForm} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-300">
-                                    Cancel
-                                </button>
-                                <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-300">
-                                    Save
-                                </button>
-                            </div>
-                        </form>
+                <div onClick={closeForm} className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-start z-50 p-4 pt-12 md:pt-24 overflow-y-auto">
+                    <div onClick={(e) => e.stopPropagation()} className={`bg-gray-800 p-8 rounded-xl shadow-2xl w-full ${addMode === 'multiple' ? 'max-w-7xl' : 'max-w-lg'} border border-gray-700`}>
+                        <h2 className="text-2xl font-bold mb-6 text-white">
+                           {editingItem ? `Edit ${title}` : 
+                                collectionName === 'expenses' ? 
+                                (addMode === 'single' ? 'Add Single Expense' :
+                                 addMode === 'multiple' ? 'Add Multiple Expenses' : 'Add Wages') :
+                                `Add ${title}`
+                           }
+                        </h2>
+                       {renderFormContent()}
                     </div>
                 </div>
             )}
 
             {itemToDelete && (
-                 <div className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-center z-50 p-4">
-                    <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-md text-center border border-gray-700">
+                 <div onClick={cancelDelete} className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-center z-50 p-4">
+                    <div onClick={(e) => e.stopPropagation()} className={`bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-md text-center border border-gray-700`}>
                         <h2 className="text-2xl font-bold mb-4 text-white">Confirm Deletion</h2>
                         <p className="text-gray-300 mb-8">Are you sure you want to delete this item? This action cannot be undone.</p>
                         <div className="flex items-center justify-center gap-4">
@@ -396,39 +1260,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                     </div>
                 </div>
             )}
-
-            <div className="overflow-x-auto">
-                <table className="w-full text-left table-auto">
-                    <thead>
-                        <tr className="border-b border-gray-700/50">
-                            {fields.map(f => <th key={f} className="p-4 capitalize text-sm font-semibold text-gray-400">{f.replace('Id', '')}</th>)}
-                            <th className="p-4 text-sm font-semibold text-gray-400">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {data.length > 0 ? data.map(item => (
-                            <tr key={item.id} className="border-b border-gray-800 hover:bg-gray-700/20">
-                                {fields.map(field => (
-                                    <td key={field} className="p-4 text-gray-300">
-                                        {field === 'amount' ? formatCurrency(item[field]) 
-                                        : field === 'vendorId' ? getVendorName(item[field])
-                                        : item[field]}
-                                    </td>
-                                ))}
-                                <td className="p-4 flex gap-4 items-center">
-                                    <button onClick={() => openForm(item)} className="text-indigo-400 hover:text-indigo-300 transition-colors duration-200"><EditIcon /></button>
-                                    <button onClick={() => handleDelete(item.id)} className="text-red-500 hover:text-red-400 transition-colors duration-200"><DeleteIcon /></button>
-                                </td>
-                            </tr>
-                        )) : (
-                            <tr>
-                                <td colSpan={fields.length + 1} className="text-center p-8 text-gray-500">No {title.toLowerCase()} records found.</td>
-                            </tr>
-                        )}
-                    </tbody>
-                </table>
-            </div>
-        </Card>
+        </>
     );
 }
 
