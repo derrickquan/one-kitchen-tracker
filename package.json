@@ -4,13 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-  "dev": "vite",
-  "build": "vite build",
-  "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
-  "preview": "vite preview",
-  "tailwind-init": "tailwindcss init -p"
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview",
+    "tailwind-init": "tailwindcss init -p"
   },
   "dependencies": {
+    "@tailwindcss/postcss": "^4.1.13",
     "firebase": "^12.2.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
