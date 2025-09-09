@@ -40,6 +40,7 @@ const Card = ({ title, children, className = '' }) => (
 
 
 // --- Main Application ---
+// v1.0.1 - Force cache bust
 export default function App() {
     const [view, setView] = useState('dashboard');
     const [db, setDb] = useState(null);
