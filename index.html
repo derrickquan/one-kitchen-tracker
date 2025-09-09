@@ -5,12 +5,30 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>One Kitchen Tracker</title>
-<script src="https://cdn.tailwindcss.com"></script>
+    <!-- (optional while developing styles) -->
+    <script src="https://cdn.tailwindcss.com"></script>
 
+    <!-- ✅ Inject Firebase config for App.jsx -->
+    <script>
+      // MUST be a JSON string because App.jsx does JSON.parse(__firebase_config)
+      window.__firebase_config = JSON.stringify({
+        apiKey: "AIzaSyBlvZLBWWNJLFGb9nX7t4xC-wPIAX6kmAU",
+        authDomain: "one-kitchen-tracker.firebaseapp.com",
+        projectId: "one-kitchen-tracker",
+        storageBucket: "one-kitchen-tracker.firebasestorage.app",
+        messagingSenderId: "665525832500",
+        appId: "1:665525832500:web:f098fca9d602d55f043361"
+      });
 
+      // Optional: if you use a server-minted custom token instead of Anonymous auth
+      // window.__initial_auth_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9....";
+      // Optional: app id override (else App.jsx defaults to 'one-kitchen-tracker')
+      // window.__app_id = "one-kitchen-tracker";
+    </script>
   </head>
   <body>
     <div id="root"></div>
+    <!-- Your Vite bundle -->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
