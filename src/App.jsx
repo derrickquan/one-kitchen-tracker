@@ -730,11 +730,42 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const [formData, setFormData] = useState({});
     const [itemToDelete, setItemToDelete] = useState(null);
     const [addMode, setAddMode] = useState('single'); // 'single', 'multiple', 'wages'
+    const [vendorNameInput, setVendorNameInput] = useState('');
     const [expenseRows, setExpenseRows] = useState([]);
     const [payPeriods, setPayPeriods] = useState([]);
     const [rowErrors, setRowErrors] = useState([]);
     const [expandedGroups, setExpandedGroups] = useState({});
     const [showStatementUpload, setShowStatementUpload] = useState(false);
+
+    // Helper functions for auto-categorization, moved up from the modal
+    const categoryKeywords = {
+        'COGS': ['supermarket', 'smart and final', '99 ranch', 'grocery', 'restaurant depot'],
+        'Supplies': ['costco', 'amazon', 'daiso', 'staples', 'home depot', 'dollar tree'],
+        'Utilities': ['verizon', 't-mobile', 'edison', 'sce', 'so cal gas', 'socalgas', 'spectrum'],
+        'Insurance': ['geico', 'state farm', 'allstate'],
+        'Maintenance & Repair': ['auto zone', 'o\'reilly'],
+        'Professional Services': ['google gsuite', 'cognito-team', 'chatgpt', 'big star', 'aaa ca membership'],
+        'Auto & Travel': ['costco gas', 'gas'],
+        'General Expense': [
+            'uep*shancheng lameizi', 
+            'wingstop', 
+            'panera', 
+            'bouncie', 
+            'chinatown express inc', 
+            'ono'
+        ],
+    };
+
+    const autoCategorize = (vendor, defaultCategory = 'General Expense') => {
+        const vendorLower = vendor.toLowerCase();
+        if (vendorLower.includes('costco gas')) return 'Auto & Travel';
+        for (const category in categoryKeywords) {
+            if (categoryKeywords[category].some(keyword => vendorLower.includes(keyword))) {
+                return category;
+            }
+        }
+        return defaultCategory;
+    };
 
     const toggleGroup = (groupKey) => {
         setExpandedGroups(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
@@ -765,34 +796,73 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
      const handleBatchSave = async (transactions) => {
         if (!db || !userId || transactions.length === 0) return;
 
-        const batch = writeBatch(db);
+        // 1. Find all unique new vendors from the transactions
+        const newVendorNames = [...new Set(
+            transactions
+                .map(t => t.vendor.trim())
+                .filter(vendorName => 
+                    vendorName && !vendors.some(v => v.name.toLowerCase() === vendorName.toLowerCase())
+                )
+        )];
+        
+        const newVendorData = {}; // Temp store for newly created vendor info { name_lower: { id, name, category } }
+
+        // 2. Batch-create new vendors if any are found
+        if (newVendorNames.length > 0) {
+            const vendorBatch = writeBatch(db);
+            const vendorsCollectionRef = collection(db, `/artifacts/${appId}/users/${userId}/vendors`);
+            for (const name of newVendorNames) {
+                const newDocRef = doc(vendorsCollectionRef);
+                const category = autoCategorize(name);
+                vendorBatch.set(newDocRef, {
+                    name: name,
+                    category: category,
+                    contactPerson: '', email: '', phoneNumber: '', accountNumber: ''
+                });
+                newVendorData[name.toLowerCase()] = { id: newDocRef.id, name: name, category: category };
+            }
+            try {
+                await vendorBatch.commit();
+            } catch (error) {
+                console.error("Error creating new vendors:", error);
+                return; 
+            }
+        }
+        
+        // 3. Batch-create expenses, linking to existing or new vendors
+        const expenseBatch = writeBatch(db);
         const expensesCollection = collection(db, `/artifacts/${appId}/users/${userId}/expenses`);
 
         transactions.forEach(t => {
             const docRef = doc(expensesCollection);
-            const matchedVendor = vendors.find(v => v.name.toLowerCase() === t.vendor.toLowerCase());
+            const vendorNameTrimmedLower = t.vendor.trim().toLowerCase();
+            
+            let matchedVendor = vendors.find(v => v.name.toLowerCase() === vendorNameTrimmedLower);
+            if (!matchedVendor) {
+                 matchedVendor = newVendorData[vendorNameTrimmedLower];
+            }
 
             const dataToSave = {
                 date: t.date || '',
-                vendorId: null,
+                vendorId: matchedVendor ? matchedVendor.id : null,
                 category: t.category || 'General Expense',
                 amount: parseFloat(t.amount || 0),
                 paymentType: t.paymentType || 'CC',
                 reportable: t.reportable !== false,
-                description: t.description,
+                description: t.description, // No longer contains the vendor name
             };
-
-            if (matchedVendor) {
-                dataToSave.vendorId = matchedVendor.id;
-            } else {
-                dataToSave.description = `${t.vendor}---${t.description}`;
+            
+            // Fallback for safety, though it shouldn't be needed
+            if (!dataToSave.vendorId) {
+                console.warn(`Could not find or create vendor for: ${t.vendor}. Storing in description.`);
+                dataToSave.description = t.description ? `${t.vendor}---${t.description}` : t.vendor;
             }
 
-            batch.set(docRef, dataToSave);
+            expenseBatch.set(docRef, dataToSave);
         });
 
         try {
-            await batch.commit();
+            await expenseBatch.commit();
             setShowStatementUpload(false);
         } catch (error) {
             console.error("Error batch saving expenses:", error);
@@ -809,6 +879,9 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         }
         if (mode === 'wages') {
             initialData.category = 'Wages';
+        }
+        if (mode === 'multiple' && collectionName === 'expenses') {
+            initialData.vendorName = '';
         }
         return initialData;
     }
@@ -849,14 +922,21 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 itemData.reportable = true;
             }
             setFormData(itemData);
+            if (itemData.vendorId && vendors && vendors.length > 0) {
+                const vendor = vendors.find(v => v.id === itemData.vendorId);
+                setVendorNameInput(vendor ? vendor.name : '');
+            } else {
+                setVendorNameInput('');
+            }
             setShowForm(true);
         } else {
              setFormData(getInitialFormData(addMode));
+             setVendorNameInput('');
              if (addMode === 'multiple') {
                 setExpenseRows(Array(10).fill().map(() => getInitialFormData('multiple')));
              }
         }
-    }, [editingItem, fields, collectionName, showForm]); // Rerun when form is opened
+    }, [editingItem, fields, collectionName, showForm, vendors]); // Rerun when form is opened
     
     const handleInputChange = (e) => {
         const { name, value, type, checked } = e.target;
@@ -874,11 +954,42 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         setFormData(newFormData);
     };
 
+    const handleVendorInputChange = (e) => {
+        const name = e.target.value;
+        setVendorNameInput(name);
+
+        const selectedVendor = vendors.find(v => v.name.toLowerCase() === name.toLowerCase());
+        if (selectedVendor) {
+            setFormData(prev => ({
+                ...prev,
+                vendorId: selectedVendor.id,
+                category: selectedVendor.category || prev.category,
+            }));
+        } else {
+            setFormData(prev => ({ ...prev, vendorId: '' }));
+        }
+    };
+
      const handleMultipleInputChange = (index, e) => {
         const { name, value, type, checked } = e.target;
-        const newRows = [...expenseRows];
-        newRows[index][name] = type === 'checkbox' ? checked : value;
-        setExpenseRows(newRows);
+
+        if (name === 'vendorName') { // Special handling for the vendor input
+            const newRows = [...expenseRows];
+            newRows[index].vendorName = value;
+    
+            const selectedVendor = vendors.find(v => v.name.toLowerCase() === value.toLowerCase());
+            if (selectedVendor) {
+                newRows[index].vendorId = selectedVendor.id;
+                newRows[index].category = selectedVendor.category || newRows[index].category || '';
+            } else {
+                newRows[index].vendorId = '';
+            }
+            setExpenseRows(newRows);
+        } else { // Generic handling for all other inputs
+            const newRows = [...expenseRows];
+            newRows[index][name] = type === 'checkbox' ? checked : value;
+            setExpenseRows(newRows);
+        }
     };
 
     const addExpenseRow = () => {
@@ -982,7 +1093,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         if (collectionName === 'expenses' && addMode === 'multiple' && !editingItem) {
             const rowsWithAmount = expenseRows.filter(row => parseFloat(row.amount || 0) > 0);
             
-            const invalidRows = rowsWithAmount.filter(row => !row.vendorId || !row.category || !row.paymentType);
+            const invalidRows = rowsWithAmount.filter(row => !row.vendorName || !row.category || !row.paymentType);
             const errorIndices = invalidRows.map(row => expenseRows.indexOf(row));
             setRowErrors(errorIndices);
 
@@ -991,7 +1102,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 // We still proceed to save the valid ones.
             }
 
-            const validRowsToSave = rowsWithAmount.filter(row => row.vendorId && row.category && row.paymentType);
+            const validRowsToSave = rowsWithAmount.filter(row => row.vendorName && row.category && row.paymentType);
 
             if (validRowsToSave.length === 0) {
                 if(invalidRows.length === 0) console.log("No expense rows to save.");
@@ -1006,10 +1117,22 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             validRowsToSave.forEach(row => {
                  const docRef = doc(expensesCollection);
                  const dataToSave = {
-                     ...row,
+                     date: row.date,
+                     vendorId: row.vendorId,
+                     category: row.category,
                      amount: parseFloat(row.amount || 0),
+                     paymentType: row.paymentType,
                      reportable: !!row.reportable,
+                     description: row.description,
                  };
+
+                 if (!dataToSave.vendorId && row.vendorName) {
+                    dataToSave.vendorId = null;
+                    dataToSave.description = dataToSave.description
+                        ? `${row.vendorName}---${dataToSave.description}`
+                        : row.vendorName;
+                 }
+
                  batch.set(docRef, dataToSave);
             });
 
@@ -1048,6 +1171,16 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         }
 
         const dataToSave = { ...formData };
+        
+        if (collectionName === 'expenses' && (addMode === 'single' || editingItem)) {
+            if (!dataToSave.vendorId && vendorNameInput) {
+                dataToSave.vendorId = null;
+                dataToSave.description = dataToSave.description
+                    ? `${vendorNameInput}---${dataToSave.description}`
+                    : vendorNameInput;
+            }
+        }
+        
         if (dataToSave.amount) dataToSave.amount = parseFloat(dataToSave.amount || 0);
         if (dataToSave.checkAmount) dataToSave.checkAmount = parseFloat(dataToSave.checkAmount || 0);
         if (dataToSave.cashAmount) dataToSave.cashAmount = parseFloat(dataToSave.cashAmount || 0);
@@ -1209,12 +1342,45 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 );
             case 'vendorId':
                  if (addMode === 'wages' && !editingItem) return null;
+                 
+                 if (addMode === 'single' || editingItem) {
+                    return (
+                        <>
+                            <input
+                                list="vendors-list"
+                                name="vendorName"
+                                id={fieldId}
+                                className={`shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 border-gray-600`}
+                                value={vendorNameInput}
+                                onChange={handleVendorInputChange}
+                                required={getRequiredStatus(field)}
+                                placeholder="Type or select a vendor"
+                            />
+                            <datalist id="vendors-list">
+                                {vendors.map(v => <option key={v.id} value={v.name} />)}
+                            </datalist>
+                        </>
+                    );
+                 }
+                 
+                 // Fallback for multiple-add mode - now a typeahead input
                  return (
-                    <select {...commonProps} value={data[field] || ''} required={getRequiredStatus(field)}>
-                        <option value="">Select Vendor</option>
-                        {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                    </select>
-                );
+                    <>
+                        <input
+                            list="vendors-list-multi"
+                            name="vendorName"
+                            id={fieldId}
+                            className={`shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 ${hasError ? 'border-red-500' : 'border-gray-600'}`}
+                            value={data.vendorName || ''}
+                            onChange={(e) => onChange(index, e)}
+                            onKeyDown={(e) => onKeyDownCallback(e, 'vendorId', index)}
+                            placeholder="Type or select a vendor"
+                        />
+                        <datalist id="vendors-list-multi">
+                            {vendors.map(v => <option key={v.id} value={v.name} />)}
+                        </datalist>
+                    </>
+                 );
             case 'date':
                 if (collectionName === 'revenues') {
                     return <input type="month" {...commonProps} value={data[field] || ''} required />;
@@ -1257,7 +1423,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                                     return (
                                         <tr key={index} className="border-b border-gray-700/50">
                                             <td className="p-1">{renderField('date', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, false)}</td>
-                                            <td className="p-1">{renderField('vendorId', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError && !row.vendorId)}</td>
+                                            <td className="p-1">{renderField('vendorId', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError && !row.vendorName)}</td>
                                             <td className="p-1">{renderField('category', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError && !row.category)}</td>
                                             <td className="p-1">{renderField('amount', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError)}</td>
                                             <td className="p-1">{renderField('paymentType', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError && !row.paymentType)}</td>
@@ -1784,9 +1950,11 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
     };
 
     const handleSaveClick = () => {
-        const selectedTransactions = transactions.filter(t => t.selected);
+        const selectedTransactions = transactions.filter(t => t.selected && !t.isDuplicate);
         onSave(selectedTransactions);
     };
+
+    const savableCount = transactions.filter(t => t.selected && !t.isDuplicate).length;
 
     return (
         <div onClick={onClose} className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-start z-50 p-4 pt-12 md:pt-24 overflow-y-auto">
@@ -1835,10 +2003,10 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
                                         : allCategories;
 
                                     return (
-                                     <tr key={t.id} className={`border-b border-gray-700/50 transition-colors duration-200 ${!t.selected ? 'text-gray-500 bg-gray-900/50' : 'hover:bg-gray-700/30'} ${t.isDuplicate ? 'bg-orange-900/50' : ''}`}>
+                                     <tr key={t.id} className={`border-b border-gray-700/50 transition-colors duration-200 ${!t.selected ? 'text-gray-500 bg-gray-900/50' : 'hover:bg-gray-700/30'} ${t.isDuplicate ? 'bg-orange-900/60 opacity-60' : ''}`}>
                                         <td className="p-2">
-                                            <input type="checkbox" checked={t.selected} onChange={e => handleTransactionChange(t.id, 'selected', e.target.checked)} />
-                                            {t.isDuplicate && <span className="text-xs text-orange-400 font-bold ml-1 block">DUPE?</span>}
+                                            <input type="checkbox" checked={t.selected} disabled={t.isDuplicate} onChange={e => handleTransactionChange(t.id, 'selected', e.target.checked)} />
+                                            {t.isDuplicate && <span className="text-xs text-orange-300 font-bold ml-1 block">DUPLICATE</span>}
                                         </td>
                                         <td className="p-2">{t.date}</td>
                                         <td className="p-2"><input type="text" value={t.vendor} onChange={e => handleTransactionChange(t.id, 'vendor', e.target.value)} className="p-1 border rounded w-full bg-gray-700 border-gray-600" /></td>
@@ -1866,14 +2034,18 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
 
                 <div className="flex items-center justify-end gap-4 pt-6">
                     <button type="button" onClick={onClose} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
-                    <button type="button" onClick={handleSaveClick} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg" disabled={transactions.filter(t => t.selected).length === 0}>
-                        Save Selected ({transactions.filter(t => t.selected).length})
+                    <button type="button" onClick={handleSaveClick} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg" disabled={savableCount === 0}>
+                        Save Selected ({savableCount})
                     </button>
                 </div>
             </div>
         </div>
     );
 }
+
+
+
+
 
 
 
