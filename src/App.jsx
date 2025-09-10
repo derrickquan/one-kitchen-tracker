@@ -1,4 +1,4 @@
-// v1.2.0 - Added Firebase email/password authentication.
+// v1.2.0 - Added Firebase email/password authentication.  
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
