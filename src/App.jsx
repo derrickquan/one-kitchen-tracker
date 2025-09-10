@@ -1,4 +1,4 @@
-// v1.0.2 - Final version with revenue splitting logic
+// v1.1.1 - Corrected NuVision CSV parsing to include all debits and apply deselection rules.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
@@ -246,8 +246,9 @@ export default function App() {
 
             return data.filter(item => {
                 if (!item.date) return false;
+                // Replace hyphens with slashes to ensure the date is parsed in the local timezone, preventing UTC conversion issues.
                 const itemDateStr = item.date.length === 7 ? `${item.date}-02` : item.date;
-                const itemDate = new Date(itemDateStr);
+                const itemDate = new Date(itemDateStr.replace(/-/g, '/'));
                 return itemDate >= start && itemDate <= end;
             });
         };
@@ -288,7 +289,14 @@ export default function App() {
     const displayDateRange = useMemo(() => {
         if (dateFilter.type === 'all') return null;
         
-        const formatDate = (date) => new Date(date).toLocaleDateString('en-US');
+        const formatDate = (date) => {
+            if (typeof date === 'string') {
+                // When date is a string 'YYYY-MM-DD', replace dashes to parse as local time.
+                return new Date(date.replace(/-/g, '/')).toLocaleDateString('en-US');
+            }
+            // If it's already a Date object, format it directly.
+            return date.toLocaleDateString('en-US');
+        };
 
         let start, end;
         const now = new Date();
@@ -472,12 +480,53 @@ function FilterBar({ dateFilter, onDateFilterChange, reportTypeFilter, onReportT
 // --- View Components ---
 
 function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, displayDateRange }) {
+    const [expandedExpenseGroups, setExpandedExpenseGroups] = useState({});
+
+    const toggleExpenseGroup = (category) => {
+        setExpandedExpenseGroups(prev => ({...prev, [category]: !prev[category]}));
+    };
     
     const getVendorName = (vendorId) => {
         if (!vendors || !vendorId) return 'N/A';
         const vendor = vendors.find(v => v.id === vendorId);
         return vendor ? vendor.name : 'Unknown Vendor';
     };
+
+     const getExpenseDisplayLine = (expense) => {
+        const vendorName = getVendorName(expense.vendorId);
+        
+        if (vendorName !== 'N/A' && vendorName !== 'Unknown Vendor') {
+            return `${vendorName} (${expense.category || 'N/A'})`;
+        }
+
+        if (expense.description && expense.description.includes('---')) {
+            const parts = expense.description.split('---');
+            return `${parts[0]} (${expense.category || 'N/A'})`;
+        }
+        
+        return expense.description || 'Expense';
+    }
+
+    const groupedRecentExpenses = useMemo(() => {
+        if (!expenses) return null;
+        
+        const recentExpenses = expenses.slice(0, 20); // Show more items for grouping
+
+        const groups = recentExpenses.reduce((acc, expense) => {
+            const category = expense.category || 'Uncategorized';
+            if (!acc[category]) {
+                acc[category] = { transactions: [], total: 0 };
+            }
+            acc[category].transactions.push(expense);
+            acc[category].total += parseFloat(expense.amount || 0);
+            return acc;
+        }, {});
+        
+        const sortedCategories = Object.keys(groups).sort((a,b) => groups[b].total - groups[a].total);
+
+        return { groups, sortedCategories };
+    }, [expenses]);
+
 
     const handlePdfDownload = () => {
         const { jsPDF } = window.jspdf;
@@ -635,16 +684,39 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
                     </ul>
                  </Card>
                  <Card title="Recent Expenses">
-                    <ul className="space-y-3">
-                         {expenses.length > 0 ? expenses.slice(0, 5).map(e => (
-                            <li key={e.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
-                               <div>
-                                   <p className="text-gray-300">{e.description || `${getVendorName(e.vendorId)} (${e.category})`}</p>
-                                   <p className="text-xs text-gray-500">{e.date}</p>
-                               </div>
-                               <span className="text-red-400 font-semibold">{formatCurrency(e.amount)}</span>
-                            </li>
-                        )) : <p className="text-gray-500">No expense entries for this period.</p>}
+                    <ul className="space-y-2">
+                        {groupedRecentExpenses && groupedRecentExpenses.sortedCategories.length > 0 ? (
+                            groupedRecentExpenses.sortedCategories.map(category => {
+                                const group = groupedRecentExpenses.groups[category];
+                                const isExpanded = expandedExpenseGroups[category];
+                                return (
+                                    <li key={category}>
+                                        <div onClick={() => toggleExpenseGroup(category)} className="flex justify-between items-center p-2 bg-gray-700/40 rounded-md cursor-pointer hover:bg-gray-700/60">
+                                            <div className="font-semibold text-gray-300">
+                                                <span className="mr-2 text-indigo-400">{isExpanded ? '▼' : '►'}</span>
+                                                {category}
+                                            </div>
+                                            <span className="font-semibold text-red-400">{formatCurrency(group.total)}</span>
+                                        </div>
+                                        {isExpanded && (
+                                            <ul className="pl-4 mt-2 space-y-3 pt-2">
+                                                {group.transactions.map(e => (
+                                                    <li key={e.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
+                                                    <div>
+                                                        <p className="text-gray-300">{getExpenseDisplayLine(e)}</p>
+                                                        <p className="text-xs text-gray-500">{e.date}</p>
+                                                    </div>
+                                                    <span className="text-red-400 font-semibold">{formatCurrency(e.amount)}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        )}
+                                    </li>
+                                )
+                            })
+                        ) : (
+                            <p className="text-gray-500">No expense entries for this period.</p>
+                        )}
                     </ul>
                  </Card>
             </div>
@@ -660,6 +732,72 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const [addMode, setAddMode] = useState('single'); // 'single', 'multiple', 'wages'
     const [expenseRows, setExpenseRows] = useState([]);
     const [payPeriods, setPayPeriods] = useState([]);
+    const [rowErrors, setRowErrors] = useState([]);
+    const [expandedGroups, setExpandedGroups] = useState({});
+    const [showStatementUpload, setShowStatementUpload] = useState(false);
+
+    const toggleGroup = (groupKey) => {
+        setExpandedGroups(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
+    };
+
+    const groupedExpenses = useMemo(() => {
+        if (collectionName !== 'expenses' || !data) {
+            return null;
+        }
+        const groups = data.reduce((acc, expense) => {
+            const category = expense.category || 'Uncategorized';
+            if (!acc[category]) {
+                acc[category] = {
+                    transactions: [],
+                    total: 0,
+                };
+            }
+            acc[category].transactions.push(expense);
+            acc[category].total += parseFloat(expense.amount || 0);
+            return acc;
+        }, {});
+
+        const sortedCategories = Object.keys(groups).sort((a, b) => groups[b].total - groups[a].total);
+
+        return { groups, sortedCategories };
+    }, [data, collectionName]);
+
+     const handleBatchSave = async (transactions) => {
+        if (!db || !userId || transactions.length === 0) return;
+
+        const batch = writeBatch(db);
+        const expensesCollection = collection(db, `/artifacts/${appId}/users/${userId}/expenses`);
+
+        transactions.forEach(t => {
+            const docRef = doc(expensesCollection);
+            const matchedVendor = vendors.find(v => v.name.toLowerCase() === t.vendor.toLowerCase());
+
+            const dataToSave = {
+                date: t.date || '',
+                vendorId: null,
+                category: t.category || 'General Expense',
+                amount: parseFloat(t.amount || 0),
+                paymentType: t.paymentType || 'CC',
+                reportable: t.reportable !== false,
+                description: t.description,
+            };
+
+            if (matchedVendor) {
+                dataToSave.vendorId = matchedVendor.id;
+            } else {
+                dataToSave.description = `${t.vendor}---${t.description}`;
+            }
+
+            batch.set(docRef, dataToSave);
+        });
+
+        try {
+            await batch.commit();
+            setShowStatementUpload(false);
+        } catch (error) {
+            console.error("Error batch saving expenses:", error);
+        }
+    };
 
     const getInitialFormData = (mode) => {
         const initialData = fields.reduce((acc, field) => ({ ...acc, [field]: '' }), {});
@@ -667,7 +805,6 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             initialData.reportable = true;
         }
         if (fields.includes('date')) {
-            const now = new Date();
             initialData.date = new Date().toISOString().split('T')[0];
         }
         if (mode === 'wages') {
@@ -741,20 +878,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         const { name, value, type, checked } = e.target;
         const newRows = [...expenseRows];
         newRows[index][name] = type === 'checkbox' ? checked : value;
-
-        if (name === 'vendorId' && vendors) {
-            const selectedVendor = vendors.find(v => v.id === value);
-            const vendorCategory = selectedVendor ? selectedVendor.category : '';
-            // Cascade vendor selection to all other rows
-            const updatedRows = newRows.map(row => ({
-                ...row,
-                vendorId: value,
-                category: vendorCategory
-            }));
-            setExpenseRows(updatedRows);
-        } else {
-            setExpenseRows(newRows);
-        }
+        setExpenseRows(newRows);
     };
 
     const addExpenseRow = () => {
@@ -764,6 +888,52 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const removeExpenseRow = (index) => {
         const newRows = expenseRows.filter((_, i) => i !== index);
         setExpenseRows(newRows);
+    };
+
+    const handleKeyDown = (e, field, index) => {
+        if (e.key !== 'Tab') return;
+        e.preventDefault();
+
+        const fieldOrder = ['date', 'vendorId', 'category', 'amount', 'paymentType', 'description', 'reportable'];
+        const currentFieldIndex = fieldOrder.indexOf(field);
+
+        let nextField, nextIndex;
+        if (e.shiftKey) { // Backwards
+            if (index > 0) {
+                nextField = field;
+                nextIndex = index - 1;
+            } else { // at the top of a column
+                if (currentFieldIndex > 0) {
+                    nextField = fieldOrder[currentFieldIndex - 1];
+                    nextIndex = expenseRows.length - 1;
+                } else {
+                    return; // at very first element
+                }
+            }
+        } else { // Forwards
+            if (index < expenseRows.length - 1) {
+                nextField = field;
+                nextIndex = index + 1;
+            } else { // at the bottom of a column
+                if (currentFieldIndex < fieldOrder.length - 1) {
+                    nextField = fieldOrder[currentFieldIndex + 1];
+                    nextIndex = 0;
+                } else {
+                     const addRowButton = document.getElementById('add-expense-row-button');
+                    if (addRowButton) addRowButton.focus();
+                    return;
+                }
+            }
+        }
+        
+        const nextElementId = `${nextField}-${nextIndex}`;
+        const nextElement = document.getElementById(nextElementId);
+        if (nextElement) {
+            nextElement.focus();
+            if (nextElement.select) {
+                 nextElement.select();
+            }
+        }
     };
 
     const handleSubmit = async (e) => {
@@ -810,19 +980,39 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
 
 
         if (collectionName === 'expenses' && addMode === 'multiple' && !editingItem) {
+            const rowsWithAmount = expenseRows.filter(row => parseFloat(row.amount || 0) > 0);
+            
+            const invalidRows = rowsWithAmount.filter(row => !row.vendorId || !row.category || !row.paymentType);
+            const errorIndices = invalidRows.map(row => expenseRows.indexOf(row));
+            setRowErrors(errorIndices);
+
+            if (invalidRows.length > 0) {
+                console.error("Validation failed for some rows. Please complete all required fields for entries with an amount.");
+                // We still proceed to save the valid ones.
+            }
+
+            const validRowsToSave = rowsWithAmount.filter(row => row.vendorId && row.category && row.paymentType);
+
+            if (validRowsToSave.length === 0) {
+                if(invalidRows.length === 0) console.log("No expense rows to save.");
+                if (invalidRows.length > 0) return; // if there are errors but nothing to save, stay on form
+                closeForm();
+                return;
+            }
+
             const batch = writeBatch(db);
             const expensesCollection = collection(db, `/artifacts/${appId}/users/${userId}/expenses`);
-            expenseRows.forEach(row => {
-                 if (row.amount && row.paymentType) { // Validation for amount and payment type
-                    const docRef = doc(expensesCollection);
-                    const dataToSave = {
-                        ...row,
-                        amount: parseFloat(row.amount || 0),
-                        reportable: !!row.reportable,
-                    };
-                    batch.set(docRef, dataToSave);
-                 }
+            
+            validRowsToSave.forEach(row => {
+                 const docRef = doc(expensesCollection);
+                 const dataToSave = {
+                     ...row,
+                     amount: parseFloat(row.amount || 0),
+                     reportable: !!row.reportable,
+                 };
+                 batch.set(docRef, dataToSave);
             });
+
             try {
                 await batch.commit();
                 closeForm();
@@ -899,6 +1089,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
 
     const openForm = (item = null, mode = 'single') => {
         setEditingItem(item);
+        setRowErrors([]);
         const effectiveMode = item ? 'single' : mode;
         setAddMode(effectiveMode);
         if (effectiveMode === 'multiple') {
@@ -911,6 +1102,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         setShowForm(false);
         setEditingItem(null);
         setExpenseRows([]); // Reset multiple rows form
+        setRowErrors([]);
     };
 
     const getVendorName = (vendorId) => {
@@ -949,14 +1141,17 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     }, [expenseRows, multipleExpensesTotal]);
 
 
-    const renderField = (field, customData, onChangeCallback, index) => {
+    const renderField = (field, customData, onChangeCallback, index, onKeyDownCallback, hasError) => {
         const data = customData || formData;
         const onChange = onChangeCallback || handleInputChange;
         const fieldId = `${field}-${index}`;
 
         const getRequiredStatus = (f) => {
             if (collectionName === 'vendors') return ['name', 'category'].includes(f);
-            if(collectionName === 'expenses') return ['date', 'vendorId', 'category', 'amount', 'paymentType'].includes(f);
+            if(collectionName === 'expenses') {
+                if(addMode === 'multiple') return false; // validation is handled manually for multi-add
+                return ['date', 'vendorId', 'category', 'amount', 'paymentType'].includes(f);
+            }
             if (['checkAmount', 'cashAmount', 'amount'].includes(f)) return false;
             return true; 
         };
@@ -965,7 +1160,8 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             name: field,
             id: fieldId,
             onChange: onChange,
-            className: "shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500",
+            className: `shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 ${hasError ? 'border-red-500' : 'border-gray-600'}`,
+            ...(onKeyDownCallback && { onKeyDown: (e) => onKeyDownCallback(e, field, index) })
         };
     
         switch(field) {
@@ -985,7 +1181,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 );
             case 'paymentType':
                  return (
-                    <select {...commonProps} value={data[field] || ''}>
+                    <select {...commonProps} value={data[field] || ''} required={getRequiredStatus(field)}>
                         <option value="">Select Type</option>
                         <option value="Check">Check</option>
                         <option value="Cash">Cash</option>
@@ -1008,6 +1204,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                         <option value="Fees & Licenses">Fees & Licenses</option>
                         <option value="Professional Services">Professional Services</option>
                         <option value="Supplies">Supplies</option>
+                        <option value="Auto & Travel">Auto & Travel</option>
                     </select>
                 );
             case 'vendorId':
@@ -1049,31 +1246,36 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                                     <th className="p-2 text-sm font-semibold text-gray-400">Category</th>
                                     <th className="p-2 text-sm font-semibold text-gray-400">Amount</th>
                                     <th className="p-2 text-sm font-semibold text-gray-400">Payment</th>
+                                    <th className="p-2 text-sm font-semibold text-gray-400">Description</th>
                                     <th className="p-2 text-sm font-semibold text-gray-400 text-center">Reportable</th>
                                     <th className="p-2 text-sm font-semibold text-gray-400"></th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {expenseRows.map((row, index) => (
-                                    <tr key={index} className="border-b border-gray-700/50">
-                                        <td className="p-1">{renderField('date', row, (e) => handleMultipleInputChange(index, e), index)}</td>
-                                        <td className="p-1">{renderField('vendorId', row, (e) => handleMultipleInputChange(index, e), index)}</td>
-                                        <td className="p-1">{renderField('category', row, (e) => handleMultipleInputChange(index, e), index)}</td>
-                                        <td className="p-1">{renderField('amount', row, (e) => handleMultipleInputChange(index, e), index)}</td>
-                                        <td className="p-1">{renderField('paymentType', row, (e) => handleMultipleInputChange(index, e), index)}</td>
-                                        <td className="p-1">{renderField('reportable', row, (e) => handleMultipleInputChange(index, e), index)}</td>
-                                        <td className="p-1">
-                                            <button type="button" onClick={() => removeExpenseRow(index)} className="text-red-500 hover:text-red-400">
-                                                <XIcon />
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
+                                {expenseRows.map((row, index) => {
+                                    const isRowInError = rowErrors.includes(index);
+                                    return (
+                                        <tr key={index} className="border-b border-gray-700/50">
+                                            <td className="p-1">{renderField('date', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, false)}</td>
+                                            <td className="p-1">{renderField('vendorId', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError && !row.vendorId)}</td>
+                                            <td className="p-1">{renderField('category', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError && !row.category)}</td>
+                                            <td className="p-1">{renderField('amount', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError)}</td>
+                                            <td className="p-1">{renderField('paymentType', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, isRowInError && !row.paymentType)}</td>
+                                            <td className="p-1">{renderField('description', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, false)}</td>
+                                            <td className="p-1">{renderField('reportable', row, (e) => handleMultipleInputChange(index, e), index, handleKeyDown, false)}</td>
+                                            <td className="p-1">
+                                                <button type="button" onClick={() => removeExpenseRow(index)} className="text-red-500 hover:text-red-400">
+                                                    <XIcon />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>
                     <div className="mt-4 flex justify-between items-center">
-                        <button type="button" onClick={addExpenseRow} className="text-indigo-400 hover:text-indigo-300 font-bold py-2 px-4 rounded">
+                        <button type="button" onClick={addExpenseRow} id="add-expense-row-button" className="text-indigo-400 hover:text-indigo-300 font-bold py-2 px-4 rounded">
                             + Add Row
                         </button>
                         <div className="text-right flex items-center gap-6">
@@ -1091,6 +1293,9 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                             </div>
                         </div>
                     </div>
+                    {rowErrors.length > 0 && (
+                        <p className="text-center text-red-400 mt-4">Please complete the highlighted fields for all expenses with an amount.</p>
+                    )}
                     <div className="flex items-center justify-end gap-4 pt-4">
                         <button type="button" onClick={closeForm} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
                         <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">Save All</button>
@@ -1150,7 +1355,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                                     name="reportable"
                                     checked={!!formData.reportable}
                                     onChange={handleInputChange}
-                                    className="h-5 w-5 bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded"
+                                    className="h-5 w-5 bg-gray-70omiGg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded"
                                 />
                                 <label htmlFor="reportable-single" className="ml-3 text-gray-300">Reportable</label>
                             </div>
@@ -1175,15 +1380,49 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         );
     };
 
+    const renderItemRow = (item, isSubRow = false) => {
+        const vendorName = getVendorName(item.vendorId);
+        let displayVendor = vendorName;
+        let displayDescription = item.description;
+
+        if (!item.vendorId && item.description && item.description.includes('---')) {
+            const parts = item.description.split('---');
+            displayVendor = parts[0];
+            displayDescription = parts[1];
+        }
+
+        return (
+            <tr key={item.id} className={`border-b border-gray-800 hover:bg-gray-700/20 ${isSubRow ? 'bg-gray-800/40' : ''}`}>
+                {fields.map((field, index) => (
+                    <td key={field} className={`p-4 text-gray-300 ${isSubRow && index === 0 ? 'pl-10' : ''}`}>
+                        {
+                            field === 'reportable' ? (item.reportable ? <CheckIcon /> : <XIcon />)
+                            : (field === 'amount' || field === 'checkAmount' || field === 'cashAmount') ? formatCurrency(item[field]) 
+                            : field === 'vendorId' ? displayVendor
+                            : field === 'category' ? getCategoryName(item)
+                            : field === 'description' ? displayDescription
+                            : item[field]
+                        }
+                    </td>
+                ))}
+                <td className="p-4 flex gap-4 items-center">
+                    <button onClick={() => openForm(item)} className="text-indigo-400 hover:text-indigo-300 transition-colors duration-200"><EditIcon /></button>
+                    <button onClick={() => handleDelete(item.id)} className="text-red-500 hover:text-red-400 transition-colors duration-200"><DeleteIcon /></button>
+                </td>
+            </tr>
+        );
+    };
+
     return (
         <>
             <Card title={`${title} Records`}>
-                <div className="flex justify-end mb-6 gap-4">
+                <div className="flex justify-end flex-wrap mb-6 gap-4">
                     {collectionName === 'expenses' ? (
                         <>
                             <button onClick={() => openForm(null, 'single')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Single Expense </button>
                             <button onClick={() => openForm(null, 'multiple')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Multiple Expenses </button>
                             <button onClick={() => openForm(null, 'wages')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Wages </button>
+                            <button onClick={() => setShowStatementUpload(true)} className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add CC/Bank Statement </button>
                         </>
                     ) : (
                         <button onClick={() => openForm()} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add {title} </button>
@@ -1198,27 +1437,34 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                                 <th className="p-4 text-sm font-semibold text-gray-400">Actions</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            {data && data.length > 0 ? data.map(item => (
-                                <tr key={item.id} className="border-b border-gray-800 hover:bg-gray-700/20">
-                                    {fields.map(field => (
-                                        <td key={field} className="p-4 text-gray-300">
-                                            {
-                                                field === 'reportable' ? (item.reportable ? <CheckIcon /> : <XIcon />)
-                                                : (field === 'amount' || field === 'checkAmount' || field === 'cashAmount') ? formatCurrency(item[field]) 
-                                                : field === 'vendorId' ? getVendorName(item[field])
-                                                : field === 'category' ? getCategoryName(item)
-                                                : field === 'description' ? item[field]
-                                                : item[field]
-                                            }
-                                        </td>
-                                    ))}
-                                    <td className="p-4 flex gap-4 items-center">
-                                        <button onClick={() => openForm(item)} className="text-indigo-400 hover:text-indigo-300 transition-colors duration-200"><EditIcon /></button>
-                                        <button onClick={() => handleDelete(item.id)} className="text-red-500 hover:text-red-400 transition-colors duration-200"><DeleteIcon /></button>
-                                    </td>
-                                </tr>
-                            )) : (
+                         <tbody>
+                            { data && data.length > 0 ? (
+                                collectionName === 'expenses' && groupedExpenses ? (
+                                    groupedExpenses.sortedCategories.map(category => {
+                                        const group = groupedExpenses.groups[category];
+                                        const isExpanded = expandedGroups[category];
+                                        return (
+                                            <React.Fragment key={category}>
+                                                <tr className="bg-gray-700/30 font-semibold cursor-pointer hover:bg-gray-700/50" onClick={() => toggleGroup(category)}>
+                                                    <td className="p-4" colSpan={fields.length}>
+                                                        <div className="flex justify-between items-center">
+                                                            <div>
+                                                                <span className="mr-3 text-lg text-indigo-400">{isExpanded ? '▼' : '►'}</span>
+                                                                {category} ({group.transactions.length})
+                                                            </div>
+                                                            <span className="font-bold text-lg">{formatCurrency(group.total)}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-4"></td>
+                                                </tr>
+                                                {isExpanded && group.transactions.map(item => renderItemRow(item, true))}
+                                            </React.Fragment>
+                                        );
+                                    })
+                                ) : (
+                                    data.map(item => renderItemRow(item))
+                                )
+                            ) : (
                                 <tr>
                                     <td colSpan={fields.length + 1} className="text-center p-8 text-gray-500">No {title.toLowerCase()} records found for this period.</td>
                                 </tr>
@@ -1244,6 +1490,15 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 </div>
             )}
 
+            {showStatementUpload && (
+                 <StatementUploadModal
+                    onClose={() => setShowStatementUpload(false)}
+                    onSave={handleBatchSave}
+                    existingExpenses={data}
+                    formatCurrency={formatCurrency}
+                 />
+            )}
+
             {itemToDelete && (
                  <div onClick={cancelDelete} className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-center z-50 p-4">
                     <div onClick={(e) => e.stopPropagation()} className={`bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-md text-center border border-gray-700`}>
@@ -1263,4 +1518,362 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         </>
     );
 }
+
+// --- New Component for Statement Upload ---
+function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrency }) {
+    const [file, setFile] = useState(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [transactions, setTransactions] = useState([]);
+    const [accountInfo, setAccountInfo] = useState(null);
+
+    const handleFileChange = (e) => {
+        const selectedFile = e.target.files[0];
+        if (selectedFile && selectedFile.type === 'text/csv') {
+            setFile(selectedFile);
+            setError('');
+            setTransactions([]); // Reset on new file select
+            setAccountInfo(null);
+        } else {
+            setFile(null);
+            setError('Please select a valid CSV file.');
+        }
+    };
+
+    const categoryKeywords = {
+        'COGS': ['supermarket', 'smart and final', '99 ranch', 'grocery', 'restaurant depot'],
+        'Supplies': ['costco', 'amazon', 'daiso', 'staples', 'home depot', 'dollar tree'],
+        'Utilities': ['verizon', 't-mobile', 'edison', 'sce', 'so cal gas', 'socalgas', 'spectrum'],
+        'Insurance': ['geico', 'state farm', 'allstate'],
+        'Maintenance & Repair': ['auto zone', 'o\'reilly'],
+        'Professional Services': ['google gsuite', 'cognito-team', 'chatgpt', 'big star', 'aaa ca membership'],
+        'Auto & Travel': ['costco gas', 'gas'],
+        'General Expense': [
+            'uep*shancheng lameizi', 
+            'wingstop', 
+            'panera', 
+            'bouncie', 
+            'chinatown express inc', 
+            'ono'
+        ],
+    };
+
+    const autoCategorize = (vendor, defaultCategory = 'General Expense') => {
+        const vendorLower = vendor.toLowerCase();
+        // Specific checks for ambiguous vendors first
+        if (vendorLower.includes('costco gas')) {
+            return 'Auto & Travel';
+        }
+        for (const category in categoryKeywords) {
+            if (categoryKeywords[category].some(keyword => vendorLower.includes(keyword))) {
+                return category;
+            }
+        }
+        return defaultCategory;
+    };
+
+    const processTransactions = (parsedData) => {
+        const transactionsWithDuplicates = parsedData.map((p, index) => {
+            const isDuplicate = existingExpenses.some(e => {
+                const sameDate = e.date === p.date;
+                const sameAmount = Math.abs(parseFloat(e.amount) - p.amount) < 0.01;
+                return sameDate && sameAmount;
+            });
+            return { ...p, id: `parsed-${index}`, selected: p.selected && !isDuplicate, isDuplicate };
+        });
+        setTransactions(transactionsWithDuplicates);
+    };
+
+    const parseBiltCsv = (csvText) => {
+        setAccountInfo({ bank: 'Bilt', name: 'Mastercard', number: '7559' });
+        const lines = csvText.trim().split('\n');
+        
+        // Handle optional header
+        if (lines.length > 0 && lines[0].toLowerCase().includes('transaction date')) {
+            lines.shift(); 
+        }
+
+        const parsed = [];
+        const paymentKeywords = ['cc pymt', 'online ach payment', 'bps*bilt rewards'];
+
+        lines.forEach(line => {
+            const values = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g)?.map(v => v.replace(/"/g, '').trim()) || [];
+            if (values.length < 5) return;
+            
+            const amountStr = values[1];
+            const vendor = values[4];
+            
+            if (!amountStr) return;
+
+            const amount = parseFloat(amountStr);
+
+            // Filter out payments and credits
+            if (amount >= 0) return; 
+            if (paymentKeywords.some(keyword => vendor.toLowerCase().includes(keyword))) {
+                return;
+            }
+
+            const dateStr = values[0];
+            const dateParts = dateStr.split('/');
+            if (dateParts.length !== 3) return;
+            
+            let [month, day, year] = dateParts;
+
+            // Handle both YY and YYYY date formats
+            if (year.length === 2) {
+                year = `20${year}`;
+            }
+            
+            const formattedDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+
+            parsed.push({
+                date: formattedDate,
+                vendor: vendor,
+                amount: Math.abs(amount),
+                category: autoCategorize(vendor),
+                paymentType: 'CC',
+                description: 'Bilt x7559',
+                reportable: true,
+                selected: true,
+            });
+        });
+        return parsed;
+    };
+
+    const parseNuVisionCsv = (csvText) => {
+        const lines = csvText.trim().split('\n');
+        const header = lines.shift();
+        if (!header.includes('Account Number')) throw new Error("Invalid NuVision CSV format.");
+      
+        const firstRowValues = lines[0].split(',').map(v => v.replace(/"/g, '').trim());
+        const fullAccountNum = firstRowValues[0];
+        setAccountInfo({ bank: 'NuVision', name: 'One Kitchen LLC', number: fullAccountNum.slice(-4) });
+      
+        const parsed = [];
+        const checkAmountsToDeselect = [1116.58, 1132.54];
+        const deselectionKeywords = ['credit card payment', 'payroll service akbb', 'trnsfr', 'wells fargo credit card'];
+      
+        lines.forEach(line => {
+          const values = line.split(',').map(v => v.replace(/"/g, '').trim());
+          if (values.length < 6) return;
+      
+          const debitStr = values[4];
+          const description = values[3];
+          const isCheck = !!values[2];
+          let shouldDeselect = false;
+      
+          if (debitStr && debitStr.trim() !== '') {
+            const debit = parseFloat(debitStr);
+            if (debit > 0) {
+              if (deselectionKeywords.some(keyword => description.toLowerCase().includes(keyword))) {
+                shouldDeselect = true;
+              }
+      
+              if (isCheck && checkAmountsToDeselect.some(amount => Math.abs(debit - amount) <= 0.25)) {
+                shouldDeselect = true;
+              }
+
+              const descriptionLower = description.toLowerCase();
+              let category;
+    
+              if (descriptionLower.includes('tesla mot')) {
+                  category = 'Auto & Travel';
+              } else if (descriptionLower.includes('s j distributor')) {
+                  category = 'COGS';
+              } else if (descriptionLower.includes('tom quan')) {
+                  category = 'Rent';
+              } else if (descriptionLower.includes('california department of motor')) {
+                  category = 'Auto & Travel';
+              } else if (descriptionLower.includes('sysco')) {
+                  category = 'COGS';
+              } else if (isCheck) {
+                  category = 'COGS';
+              } else {
+                 category = autoCategorize(description, values[8] || 'General Expense');
+              }
+      
+              const [month, day, year] = values[1].split('/');
+              parsed.push({
+                date: `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`,
+                vendor: description.replace(/&amp;/g, '&'),
+                amount: debit,
+                category: category,
+                paymentType: isCheck ? 'Check' : 'Bank Transfer',
+                description: `NuVision x${fullAccountNum.slice(-4)}`,
+                reportable: true,
+                selected: !shouldDeselect,
+              });
+            }
+          }
+        });
+        return parsed;
+      };
+
+    const parseCapitalOneCsv = (csvText) => {
+        const lines = csvText.trim().split('\n');
+        lines.shift();
+        const firstRowValues = lines[0].split(',');
+        const cardNum = firstRowValues[2];
+        setAccountInfo({ bank: 'Capital One', name: 'One Kitchen LLC', number: cardNum });
+        
+        const parsed = [];
+        lines.forEach(line => {
+            const values = line.split(',');
+            if (values.length < 6 || !values[5] || values[4].toLowerCase() === 'payment/credit') return; // Must have a debit, not a payment
+
+            const debit = parseFloat(values[5]);
+            if (debit > 0) {
+                 parsed.push({
+                    date: values[0], // Already YYYY-MM-DD
+                    vendor: values[3],
+                    amount: debit,
+                    category: autoCategorize(values[3], values[4] || 'General Expense'),
+                    paymentType: 'CC',
+                    description: `Capital One x${cardNum}`,
+                    reportable: true,
+                    selected: true,
+                 });
+            }
+        });
+        return parsed;
+    };
+
+
+    const handleParse = () => {
+        if (!file) return;
+        setIsLoading(true);
+        setError('');
+        setTransactions([]);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const csvText = e.target.result;
+                let parsedData = [];
+
+                // Detect file type based on header or content
+                if (csvText.includes('"Transaction Date","Amount","Reward Multiplier"') || csvText.includes('BPS*BILT REWARDS')) {
+                    parsedData = parseBiltCsv(csvText);
+                } else if (csvText.includes('Account Number,Post Date,Check,Description,Debit,Credit')) {
+                    parsedData = parseNuVisionCsv(csvText);
+                } else if (csvText.includes('Transaction Date,Posted Date,Card No.')) {
+                    parsedData = parseCapitalOneCsv(csvText);
+                } else {
+                    throw new Error("Unsupported CSV file format.");
+                }
+
+                if (parsedData.length === 0) {
+                    setError('No valid expense transactions were found in the file.');
+                }
+                processTransactions(parsedData);
+            } catch (err) {
+                console.error(err);
+                setError(err.message || 'An error occurred while parsing the file.');
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        reader.onerror = () => {
+            setIsLoading(false);
+            setError('Failed to read the file.');
+        };
+        reader.readAsText(file);
+    };
+
+    const handleTransactionChange = (id, field, value) => {
+        setTransactions(prev => prev.map(t => t.id === id ? { ...t, [field]: value } : t));
+    };
+
+    const handleSaveClick = () => {
+        const selectedTransactions = transactions.filter(t => t.selected);
+        onSave(selectedTransactions);
+    };
+
+    return (
+        <div onClick={onClose} className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-start z-50 p-4 pt-12 md:pt-24 overflow-y-auto">
+            <div onClick={(e) => e.stopPropagation()} className={`bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-6xl border border-gray-700`}>
+                <h2 className="text-2xl font-bold mb-4 text-white">Add CC/Bank Statement</h2>
+                <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 mb-6">
+                    <h3 className="font-semibold text-indigo-400">Instructions:</h3>
+                    <p className="text-gray-400 text-sm mt-2">Attach one of 3 files: Bilt Mastercard x7559, Capital One Visa x2364, or NuVision Bank Statement x7150. Download Transactions in a CSV format.</p>
+                </div>
+
+                <div className="flex items-center gap-4 mb-6">
+                    <input type="file" accept=".csv" onChange={handleFileChange} className="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-700"/>
+                    <button onClick={handleParse} disabled={!file || isLoading} className="bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded-lg disabled:bg-gray-500">
+                        {isLoading ? 'Parsing...' : 'Parse File'}
+                    </button>
+                </div>
+                 {accountInfo && (
+                    <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 mb-6 flex justify-around text-center">
+                        <div><span className="font-semibold block text-gray-400">Bank/Issuer</span>{accountInfo.bank}</div>
+                        <div><span className="font-semibold block text-gray-400">Account Name</span>{accountInfo.name}</div>
+                        <div><span className="font-semibold block text-gray-400">Account Number</span>xxxx-{accountInfo.number}</div>
+                    </div>
+                )}
+
+
+                {error && <p className="text-red-400 text-center mb-4">{error}</p>}
+
+                {transactions.length > 0 && (
+                    <div className="overflow-y-auto max-h-[40vh]">
+                        <table className="w-full text-left text-sm">
+                             <thead className="sticky top-0 bg-gray-800">
+                                <tr className="border-b border-gray-700">
+                                    <th className="p-2"><input type="checkbox" checked={transactions.every(t => t.selected)} onChange={e => setTransactions(transactions.map(t => ({...t, selected: e.target.checked})))} /></th>
+                                    <th className="p-2">Date</th>
+                                    <th className="p-2 w-1/3">Vendor</th>
+                                    <th className="p-2">Amount</th>
+                                    <th className="p-2">Category</th>
+                                    <th className="p-2">Payment Type</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {transactions.map(t => {
+                                    const allCategories = [ "Wages", "COGS", "Rent", "Utilities", "General Expense", "Insurance", "Maintenance & Repair", "Fees & Licenses", "Professional Services", "Supplies", "Auto & Travel"];
+                                    const availableCategories = (accountInfo?.bank === 'Bilt' || accountInfo?.bank === 'Capital One')
+                                        ? allCategories.filter(c => c !== 'Wages')
+                                        : allCategories;
+
+                                    return (
+                                     <tr key={t.id} className={`border-b border-gray-700/50 transition-colors duration-200 ${!t.selected ? 'text-gray-500 bg-gray-900/50' : 'hover:bg-gray-700/30'} ${t.isDuplicate ? 'bg-orange-900/50' : ''}`}>
+                                        <td className="p-2">
+                                            <input type="checkbox" checked={t.selected} onChange={e => handleTransactionChange(t.id, 'selected', e.target.checked)} />
+                                            {t.isDuplicate && <span className="text-xs text-orange-400 font-bold ml-1 block">DUPE?</span>}
+                                        </td>
+                                        <td className="p-2">{t.date}</td>
+                                        <td className="p-2"><input type="text" value={t.vendor} onChange={e => handleTransactionChange(t.id, 'vendor', e.target.value)} className="p-1 border rounded w-full bg-gray-700 border-gray-600" /></td>
+                                        <td className="p-2">{formatCurrency(t.amount)}</td>
+                                        <td className="p-2">
+                                            <select value={t.category} onChange={e => handleTransactionChange(t.id, 'category', e.target.value)} className="p-1 border rounded w-full bg-gray-700 border-gray-600">
+                                                {availableCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                                            </select>
+                                        </td>
+                                        <td className="p-2">
+                                            <select value={t.paymentType} onChange={e => handleTransactionChange(t.id, 'paymentType', e.target.value)} className="p-1 border rounded w-full bg-gray-700 border-gray-600">
+                                                <option value="CC">CC</option>
+                                                <option value="Check">Check</option>
+                                                <option value="Cash">Cash</option>
+                                                <option value="Bank Transfer">Bank Transfer</option>
+                                            </select>
+                                        </td>
+                                    </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+
+                <div className="flex items-center justify-end gap-4 pt-6">
+                    <button type="button" onClick={onClose} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
+                    <button type="button" onClick={handleSaveClick} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg" disabled={transactions.filter(t => t.selected).length === 0}>
+                        Save Selected ({transactions.filter(t => t.selected).length})
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+
 
