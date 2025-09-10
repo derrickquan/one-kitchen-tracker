@@ -1,4 +1,4 @@
-// v1.2.0 - Added Firebase email/password authentication.  
+// v1.2.0 - Added Firebase email/password authentication.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -51,6 +51,7 @@ const LoginScreen = ({ auth }) => {
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
+    const [anonymousLoading, setAnonymousLoading] = useState(false);
 
     const handleAuthAction = async (e) => {
         e.preventDefault();
@@ -71,6 +72,18 @@ const LoginScreen = ({ auth }) => {
             setError(err.message.replace('Firebase: ', ''));
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleAnonymousSignIn = async () => {
+        setAnonymousLoading(true);
+        setError('');
+        try {
+            await signInAnonymously(auth);
+        } catch (err) {
+            setError(err.message.replace('Firebase: ', ''));
+        } finally {
+            setAnonymousLoading(false);
         }
     };
 
@@ -116,6 +129,27 @@ const LoginScreen = ({ auth }) => {
                             </button>
                         </div>
                     </form>
+
+                    <div className="relative my-6">
+                        <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                            <div className="w-full border-t border-gray-600" />
+                        </div>
+                        <div className="relative flex justify-center text-sm">
+                            <span className="bg-gray-800 px-2 text-gray-400">Or</span>
+                        </div>
+                    </div>
+
+                    <div>
+                         <button
+                            type="button"
+                            onClick={handleAnonymousSignIn}
+                            disabled={loading || anonymousLoading}
+                            className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg disabled:bg-gray-500 transition-colors duration-300 flex justify-center items-center"
+                        >
+                            {anonymousLoading ? <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-white"></div> : 'Sign in Anonymously'}
+                        </button>
+                    </div>
+
                     <p className="text-center text-sm text-gray-400 mt-6">
                         {isLogin ? "Don't have an account?" : "Already have an account?"}
                         <button onClick={() => { setIsLogin(!isLogin); setError(''); }} className="font-bold text-indigo-400 hover:text-indigo-300 ml-2 focus:outline-none">
@@ -2064,6 +2098,7 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
+
 
 
 
