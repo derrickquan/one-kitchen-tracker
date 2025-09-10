@@ -1,4 +1,4 @@
-// v1.1.1 - Corrected NuVision CSV parsing to include all debits and apply deselection rules.
+// v1.1.1 - Corrected NuVision CSV parsing to include all debits and apply deselection rules. v2
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
