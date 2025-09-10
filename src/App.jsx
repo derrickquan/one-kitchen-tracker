@@ -900,21 +900,19 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             const docRef = doc(expensesCollection);
             const matchedVendor = vendors.find(v => v.name.toLowerCase() === t.vendor.toLowerCase());
 
+            // Prepare the data to be saved.
+            // If a vendor is matched, we store its ID and the clean description from the parser.
+            // If not matched, we store a null ID and combine the parsed vendor name and description with '---'
+            // so the display logic can correctly separate them.
             const dataToSave = {
                 date: t.date || '',
-                vendorId: null,
+                vendorId: matchedVendor ? matchedVendor.id : null,
                 category: t.category || 'General Expense',
                 amount: parseFloat(t.amount || 0),
                 paymentType: t.paymentType || 'CC',
                 reportable: t.reportable !== false,
-                description: t.description,
+                description: matchedVendor ? t.description : `${t.vendor}---${t.description}`,
             };
-
-            if (matchedVendor) {
-                dataToSave.vendorId = matchedVendor.id;
-            } else {
-                dataToSave.description = `${t.vendor}---${t.description}`;
-            }
 
             batch.set(docRef, dataToSave);
         });
@@ -979,13 +977,24 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             if (fields.includes('reportable') && typeof itemData.reportable === 'undefined') {
                 itemData.reportable = true;
             }
-            setFormData(itemData);
-            if (itemData.vendorId && vendors && vendors.length > 0) {
+
+            let initialVendorName = '';
+            let initialDescription = itemData.description || '';
+
+            // If it's an unmatched vendor from a statement, parse the description
+            if (!itemData.vendorId && itemData.description && itemData.description.includes('---')) {
+                const parts = itemData.description.split('---');
+                initialVendorName = parts[0];
+                initialDescription = parts[1];
+            } 
+            // If it's a matched vendor, look up its name
+            else if (itemData.vendorId && vendors && vendors.length > 0) {
                 const vendor = vendors.find(v => v.id === itemData.vendorId);
-                setVendorNameInput(vendor ? vendor.name : '');
-            } else {
-                setVendorNameInput('');
+                initialVendorName = vendor ? vendor.name : '';
             }
+
+            setFormData({ ...itemData, description: initialDescription });
+            setVendorNameInput(initialVendorName);
             setShowForm(true);
         } else {
              setFormData(getInitialFormData(addMode));
@@ -2098,6 +2107,8 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
+
+
 
 
 
