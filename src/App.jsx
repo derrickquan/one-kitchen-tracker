@@ -1,4 +1,4 @@
-// v1.2.0 - Added Firebase email/password authentication.
+// v1.2.2 - Increased dashboard limit and improved keyword matching.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -619,6 +619,19 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
         return vendor ? vendor.name : 'Unknown Vendor';
     };
 
+    const parseExpenseDetails = (expense) => {
+        let vendor = getVendorName(expense.vendorId);
+        let description = expense.description || '';
+
+        if ((vendor === 'N/A' || vendor === 'Unknown Vendor') && expense.description && expense.description.includes('---')) {
+            const parts = expense.description.split('---');
+            vendor = parts[0];
+            description = parts[1];
+        }
+        
+        return { vendor, description };
+    };
+
      const getExpenseDisplayLine = (expense) => {
         const vendorName = getVendorName(expense.vendorId);
         
@@ -637,9 +650,7 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
     const groupedRecentExpenses = useMemo(() => {
         if (!expenses) return null;
         
-        const recentExpenses = expenses.slice(0, 20); // Show more items for grouping
-
-        const groups = recentExpenses.reduce((acc, expense) => {
+        const groups = expenses.reduce((acc, expense) => {
             const category = expense.category || 'Uncategorized';
             if (!acc[category]) {
                 acc[category] = { transactions: [], total: 0 };
@@ -720,7 +731,8 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
 
             sortedExpenses.forEach(e => {
                 if (y > 280) { doc.addPage(); y = 20; }
-                const line = `${e.date} | ${e.description || getVendorName(e.vendorId)} | ${e.paymentType || 'N/A'}`;
+                const { vendor, description } = parseExpenseDetails(e);
+                const line = `${e.date} | ${vendor} | ${description || ''}`;
                 doc.text(line, 14, y);
                 doc.text(formatCurrency(e.amount), 195, y, { align: 'right' });
                 y += 6;
@@ -754,14 +766,17 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
                 if (a.category > b.category) return 1;
                 return new Date(a.date) - new Date(b.date);
             })
-            .map(e => ({
-            Date: e.date,
-            Vendor: getVendorName(e.vendorId),
-            Category: e.category,
-            'Pay Type': e.paymentType,
-            Desc: e.description,
-            Amount: e.amount || 0
-        }));
+            .map(e => {
+                const { vendor, description } = parseExpenseDetails(e);
+                return {
+                    Date: e.date,
+                    Vendor: vendor,
+                    Category: e.category,
+                    'Pay Type': e.paymentType,
+                    Desc: description,
+                    Amount: e.amount || 0
+                };
+            });
         const expenseSheet = XLSX.utils.json_to_sheet(expenseData);
         XLSX.utils.book_append_sheet(wb, expenseSheet, "Expenses");
 
@@ -794,9 +809,9 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
                 </Card>
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                 <Card title="Recent Revenue">
+                 <Card title="Revenue">
                     <ul className="space-y-3">
-                        {revenues.length > 0 ? revenues.slice(0, 5).map(r => {
+                        {revenues.length > 0 ? revenues.map(r => {
                             const totalAmount = (parseFloat(r.checkAmount) || 0) + (parseFloat(r.cashAmount) || 0);
                              return (
                                 <li key={r.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
@@ -810,7 +825,7 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
                         }) : <p className="text-gray-500">No revenue entries for this period.</p>}
                     </ul>
                  </Card>
-                 <Card title="Recent Expenses">
+                 <Card title="Expenses">
                     <ul className="space-y-2">
                         {groupedRecentExpenses && groupedRecentExpenses.sortedCategories.length > 0 ? (
                             groupedRecentExpenses.sortedCategories.map(category => {
@@ -821,7 +836,7 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
                                         <div onClick={() => toggleExpenseGroup(category)} className="flex justify-between items-center p-2 bg-gray-700/40 rounded-md cursor-pointer hover:bg-gray-700/60">
                                             <div className="font-semibold text-gray-300">
                                                 <span className="mr-2 text-indigo-400">{isExpanded ? '▼' : '►'}</span>
-                                                {category}
+                                                {category} ({group.transactions.length})
                                             </div>
                                             <span className="font-semibold text-red-400">{formatCurrency(group.total)}</span>
                                         </div>
@@ -863,6 +878,19 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const [rowErrors, setRowErrors] = useState([]);
     const [expandedGroups, setExpandedGroups] = useState({});
     const [showStatementUpload, setShowStatementUpload] = useState(false);
+    const [wageFieldStatus, setWageFieldStatus] = useState({});
+    const [showWageWarning, setShowWageWarning] = useState(false);
+
+    useEffect(() => {
+        if (collectionName === 'expenses' && data) {
+            const categories = [...new Set(data.map(item => item.category || 'Uncategorized'))];
+            const allExpanded = categories.reduce((acc, category) => {
+                acc[category] = true;
+                return acc;
+            }, {});
+            setExpandedGroups(allExpanded);
+        }
+    }, [data, collectionName]);
 
     const toggleGroup = (groupKey) => {
         setExpandedGroups(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
@@ -1120,11 +1148,24 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
 
         if (collectionName === 'expenses' && addMode === 'wages' && !editingItem) {
             const { payPeriod, payrollAmount, payrollTax, cash } = formData;
+            
+            const newFieldStatus = {};
+            let hasMissingFields = false;
+            if (!payrollAmount) { newFieldStatus.payrollAmount = 'warn'; hasMissingFields = true; }
+            if (!payrollTax) { newFieldStatus.payrollTax = 'warn'; hasMissingFields = true; }
+            if (!cash) { newFieldStatus.cash = 'warn'; hasMissingFields = true; }
+            setWageFieldStatus(newFieldStatus);
+
+            if(hasMissingFields && !showWageWarning) {
+                setShowWageWarning(true);
+                return; 
+            }
+
             const payrollVendor = vendors.find(v => v.name === 'Sure Payroll');
             const payrollVendorId = payrollVendor ? payrollVendor.id : null;
 
-            if (!payPeriod || (!payrollAmount && !payrollTax && !cash)) {
-                console.error("Pay period and at least one amount are required.");
+            if (!payPeriod) {
+                console.error("Pay period is required.");
                 return;
             }
             
@@ -1134,18 +1175,14 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             const batch = writeBatch(db);
             const expensesCollection = collection(db, `/artifacts/${appId}/users/${userId}/expenses`);
 
-            if (parseFloat(payrollAmount || 0) > 0) {
-                const docRef = doc(expensesCollection);
-                batch.set(docRef, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(payrollAmount), paymentType: 'Bank Transfer', reportable: true, description: `Pay Period: ${periodLabel}` });
-            }
-            if (parseFloat(payrollTax || 0) > 0) {
-                const docRef = doc(expensesCollection);
-                batch.set(docRef, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(payrollTax), paymentType: 'Bank Transfer', reportable: true, description: `Payroll Tax: ${periodLabel}` });
-            }
-            if (parseFloat(cash || 0) > 0) {
-                 const docRef = doc(expensesCollection);
-                batch.set(docRef, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(cash), paymentType: 'Cash', reportable: false, description: `Cash Payroll: ${periodLabel}` });
-            }
+            const docRef1 = doc(expensesCollection);
+            batch.set(docRef1, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(payrollAmount || 0), paymentType: 'Bank Transfer', reportable: true, description: `Pay Period: ${periodLabel}` });
+            
+            const docRef2 = doc(expensesCollection);
+            batch.set(docRef2, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(payrollTax || 0), paymentType: 'Bank Transfer', reportable: true, description: `Payroll Tax: ${periodLabel}` });
+            
+            const docRef3 = doc(expensesCollection);
+            batch.set(docRef3, { date: payPeriod, vendorId: payrollVendorId, category: 'Wages', amount: parseFloat(cash || 0), paymentType: 'Cash', reportable: false, description: `Cash Payroll: ${periodLabel}` });
             
             try {
                 await batch.commit();
@@ -1303,6 +1340,8 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         setEditingItem(null);
         setExpenseRows([]); // Reset multiple rows form
         setRowErrors([]);
+        setShowWageWarning(false);
+        setWageFieldStatus({});
     };
 
     const getVendorName = (vendorId) => {
@@ -1439,7 +1478,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                             id={fieldId}
                             className={`shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 ${hasError ? 'border-red-500' : 'border-gray-600'}`}
                             value={data.vendorName || ''}
-                            onChange={(e) => onChange(index, e)}
+                            onChange={onChange}
                             onKeyDown={(e) => onKeyDownCallback(e, 'vendorId', index)}
                             placeholder="Type or select a vendor"
                         />
@@ -1540,6 +1579,12 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         if (addMode === 'wages' && collectionName === 'expenses' && !editingItem) {
              return (
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    {showWageWarning && (
+                        <div className="bg-orange-800/50 text-orange-300 border border-orange-700 p-3 rounded-lg text-center text-sm">
+                            <p className="font-bold">Missing Fields</p>
+                            <p>One or more amount fields are empty. You can still save, and a value of $0.00 will be recorded for any empty fields.</p>
+                        </div>
+                    )}
                     <div>
                         <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="payPeriod">Pay Period</label>
                         <select id="payPeriod" name="payPeriod" value={formData.payPeriod || ''} onChange={handleInputChange} className="shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
@@ -1549,19 +1594,21 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                     </div>
                      <div>
                         <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="payrollAmount">Payroll Amount</label>
-                        <input type="number" step="0.01" id="payrollAmount" name="payrollAmount" value={formData.payrollAmount || ''} onChange={handleInputChange} className="shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        <input type="number" step="0.01" id="payrollAmount" name="payrollAmount" value={formData.payrollAmount || ''} onChange={handleInputChange} className={`shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 ${wageFieldStatus.payrollAmount === 'warn' ? 'border-red-500 ring-red-500' : 'border-gray-600'}`} />
                     </div>
                      <div>
                         <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="payrollTax">Payroll Tax</label>
-                        <input type="number" step="0.01" id="payrollTax" name="payrollTax" value={formData.payrollTax || ''} onChange={handleInputChange} className="shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        <input type="number" step="0.01" id="payrollTax" name="payrollTax" value={formData.payrollTax || ''} onChange={handleInputChange} className={`shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 ${wageFieldStatus.payrollTax === 'warn' ? 'border-red-500 ring-red-500' : 'border-gray-600'}`} />
                     </div>
                      <div>
                         <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="cash">Cash</label>
-                        <input type="number" step="0.01" id="cash" name="cash" value={formData.cash || ''} onChange={handleInputChange} className="shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        <input type="number" step="0.01" id="cash" name="cash" value={formData.cash || ''} onChange={handleInputChange} className={`shadow-inner appearance-none border rounded w-full py-2 px-3 bg-gray-700 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 ${wageFieldStatus.cash === 'warn' ? 'border-red-500 ring-red-500' : 'border-gray-600'}`} />
                     </div>
                     <div className="flex items-center justify-end gap-4 pt-4">
                         <button type="button" onClick={closeForm} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Cancel</button>
-                        <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">Save</button>
+                        <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">
+                            {showWageWarning ? 'Save Anyway' : 'Save'}
+                        </button>
                     </div>
                 </form>
             );
@@ -1588,7 +1635,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                                     name="reportable"
                                     checked={!!formData.reportable}
                                     onChange={handleInputChange}
-                                    className="h-5 w-5 bg-gray-70omiGg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded"
+                                    className="h-5 w-5 bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded"
                                 />
                                 <label htmlFor="reportable-single" className="ml-3 text-gray-300">Reportable</label>
                             </div>
@@ -1787,6 +1834,7 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
             'panera', 
             'bouncie', 
             'chinatown express inc', 
+            'j&q chinatown express inc',
             'ono'
         ],
     };
@@ -1956,9 +2004,22 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
 
             const debit = parseFloat(values[5]);
             if (debit > 0) {
+                let transactionDate = values[0];
+                // Normalize date to YYYY-MM-DD format
+                if (transactionDate.includes('/')) {
+                    const parts = transactionDate.split('/');
+                    const month = parts[0].padStart(2, '0');
+                    const day = parts[1].padStart(2, '0');
+                    let year = parts[2];
+                    if (year.length === 2) {
+                        year = `20${year}`;
+                    }
+                    transactionDate = `${year}-${month}-${day}`;
+                }
+
                  parsed.push({
-                    date: values[0], // Already YYYY-MM-DD
-                    vendor: values[3],
+                    date: transactionDate, // Use normalized date
+                    vendor: values[3].replace(/&amp;/g, '&'),
                     amount: debit,
                     category: autoCategorize(values[3], values[4] || 'General Expense'),
                     paymentType: 'CC',
@@ -2107,7 +2168,6 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
-
 
 
 
