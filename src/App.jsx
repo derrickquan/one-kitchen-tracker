@@ -1,4 +1,4 @@
-// v1.2.2 - Increased dashboard limit and improved keyword matching.
+// v1.4.2 - Combined COGS and Supplies filter on dashboard chart.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -43,6 +43,31 @@ const Card = ({ title, children, className = '' }) => (
         {children}
     </div>
 );
+
+const CollapsibleCard = ({ title, children, defaultOpen = false }) => {
+    const [isOpen, setIsOpen] = useState(defaultOpen);
+
+    const toggleOpen = () => setIsOpen(!isOpen);
+
+    return (
+        <div className="bg-gray-800/50 backdrop-blur-sm rounded-xl shadow-lg border border-gray-700/50 overflow-hidden transition-all duration-300">
+            <h3 
+                className="text-lg font-semibold text-gray-200 p-6 cursor-pointer flex justify-between items-center hover:bg-gray-700/20 transition-colors"
+                onClick={toggleOpen}
+            >
+                {title}
+                <span className={`transform transition-transform duration-300 ${isOpen ? 'rotate-180' : 'rotate-0'}`}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </span>
+            </h3>
+            <div className={`transition-all duration-500 ease-in-out overflow-hidden ${isOpen ? 'max-h-[500px]' : 'max-h-0'}`}>
+                 <div className="p-6 pt-0">
+                    {children}
+                </div>
+            </div>
+        </div>
+    );
+};
 
 // --- New Login Screen Component ---
 const LoginScreen = ({ auth }) => {
@@ -196,6 +221,12 @@ export default function App() {
         excelScript.async = true;
         document.body.appendChild(excelScript);
 
+        // Load Chart.js for pie charts
+        const chartScript = document.createElement('script');
+        chartScript.src = 'https://cdn.jsdelivr.net/npm/chart.js';
+        chartScript.async = true;
+        document.body.appendChild(chartScript);
+
         if (typeof __firebase_config === 'undefined') {
             console.error("Firebase config is not available.");
             setIsAuthReady(true);
@@ -226,9 +257,10 @@ export default function App() {
                 unsubscribe();
                 document.body.removeChild(pdfScript);
                 document.body.removeChild(excelScript);
+                document.body.removeChild(chartScript);
             };
         } catch (error) {
-            console.error("Firebase initialization failed:", error);
+            console.error("Error during Firebase initialization:", error);
             setIsAuthReady(true);
             setIsLoading(false);
         }
@@ -453,7 +485,7 @@ export default function App() {
             <div>
                 {
                     {
-                        'dashboard': <DashboardView totals={totals} revenues={filteredRevenues} expenses={filteredExpenses} formatCurrency={formatCurrency} vendors={vendors} displayDateRange={displayDateRange} />,
+                        'dashboard': <DashboardView totals={totals} revenues={filteredRevenues} expenses={filteredExpenses} allRevenues={revenues} allExpenses={expenses} formatCurrency={formatCurrency} vendors={vendors} displayDateRange={displayDateRange} />,
                         'revenue': <CrudView title="Revenue" data={filteredRevenues} db={db} userId={userId} appId={appId} collectionName="revenues" fields={['source', 'date', 'checkAmount', 'cashAmount', 'reportable']} formatCurrency={formatCurrency} />,
                         'expenses': <CrudView title="Expenses" data={filteredExpenses} db={db} userId={userId} appId={appId} collectionName="expenses" fields={['date', 'vendorId', 'category', 'amount', 'paymentType', 'reportable', 'description']} formatCurrency={formatCurrency} vendors={vendors} />,
                         'vendors': <CrudView title="Vendors" data={vendors} db={db} userId={userId} appId={appId} collectionName="vendors" fields={['name', 'category', 'contactPerson', 'email', 'phoneNumber', 'accountNumber']} formatCurrency={formatCurrency} />,
@@ -540,12 +572,12 @@ function FilterBar({ dateFilter, onDateFilterChange, reportTypeFilter, onReportT
     const trailingMonths = useMemo(() => {
         const months = [];
         let date = new Date();
-        for (let i = 0; i < 13; i++) { // Changed to 13 months
+        for (let i = 0; i < 13; i++) {
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const year = date.getFullYear();
             months.push({
                 value: `${year}-${month}`,
-                label: date.toLocaleString('default', { month: 'long', year: 'numeric' })
+                label: `${date.toLocaleString('default', { month: 'long' })} ${year}`
             });
             date.setMonth(date.getMonth() - 1);
         }
@@ -553,61 +585,209 @@ function FilterBar({ dateFilter, onDateFilterChange, reportTypeFilter, onReportT
     }, []);
 
     return (
-        <div className="flex flex-col gap-2 w-full">
-            <div className="flex flex-col md:flex-row gap-2 items-center">
-                 <select 
-                    value={dateFilter.type} 
-                    onChange={handleTypeChange}
-                    className="shadow-inner appearance-none border rounded w-full md:w-auto py-2 px-3 bg-gray-700/80 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-                >
-                    <option value="all">All Time</option>
-                    <option value="thisMonth">This Month</option>
-                    <option value="lastMonth">Last Month</option>
-                    <option value="lastQuarter">Last Quarter</option>
-                    <option value="custom">Custom Period</option>
-                    <option disabled>──────────</option>
-                    {trailingMonths.map(m => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
-                </select>
-                <select 
-                    value={reportTypeFilter} 
-                    onChange={(e) => onReportTypeFilterChange(e.target.value)}
-                    className="shadow-inner appearance-none border rounded w-full md:w-auto py-2 px-3 bg-gray-700/80 border-gray-600 text-white leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-                 >
-                    <option value="reportableOnly">Reportable Only</option>
-                    <option value="nonReportableOnly">Non-Reportable Only</option>
-                    <option value="all">All</option>
-                </select>
-            </div>
+        <div className="flex flex-col md:flex-row items-center gap-2 w-full">
+            <select
+                value={reportTypeFilter}
+                onChange={(e) => onReportTypeFilterChange(e.target.value)}
+                className="w-full md:w-auto bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+                <option value="all">All Transactions</option>
+                <option value="reportableOnly">Reportable Only</option>
+                <option value="nonReportableOnly">Non-Reportable Only</option>
+            </select>
+            <select
+                value={dateFilter.type}
+                onChange={handleTypeChange}
+                className="w-full md:w-auto bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+                <option value="all">All Time</option>
+                <option value="thisMonth">This Month</option>
+                <option value="lastMonth">Last Month</option>
+                <option value="lastQuarter">Last Quarter</option>
+                {trailingMonths.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                <option value="custom">Custom Range</option>
+            </select>
             {dateFilter.type === 'custom' && (
-                <div className="flex flex-col md:flex-row gap-2 items-center w-full">
-                    <input 
-                        type="date" 
+                <div className="flex flex-col sm:flex-row items-center gap-2 w-full md:w-auto">
+                    <input
+                        type="date"
                         name="startDate"
                         value={customDates.startDate}
                         onChange={handleCustomDateChange}
-                        className="shadow-inner appearance-none border rounded w-full md:w-auto py-2 px-3 bg-gray-700/80 border-gray-600 text-white text-sm"
+                        className="w-full sm:w-auto bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
-                     <span className="text-gray-400">to</span>
-                    <input 
-                        type="date" 
+                    <span className="text-gray-400">to</span>
+                    <input
+                        type="date"
                         name="endDate"
                         value={customDates.endDate}
                         onChange={handleCustomDateChange}
-                        className="shadow-inner appearance-none border rounded w-full md:w-auto py-2 px-3 bg-gray-700/80 border-gray-600 text-white text-sm"
+                        className="w-full sm:w-auto bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
-                    <button onClick={applyCustomFilter} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 rounded-lg w-full md:w-auto text-sm">Apply</button>
+                    <button onClick={applyCustomFilter} className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 text-sm rounded-md">Apply</button>
                 </div>
             )}
         </div>
     );
 }
 
-// --- View Components ---
+function PieChart({ data }) {
+    const chartRef = useRef(null);
+    const chartInstance = useRef(null);
 
-function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, displayDateRange }) {
+    useEffect(() => {
+        // Destroy previous chart instance before creating a new one
+        if (chartInstance.current) {
+            chartInstance.current.destroy();
+        }
+
+        if (window.Chart && chartRef.current && data) {
+            const ctx = chartRef.current.getContext('2d');
+            chartInstance.current = new window.Chart(ctx, {
+                type: 'pie',
+                data: data,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {
+                                color: '#d1d5db', // text-gray-300
+                                boxWidth: 12,
+                                padding: 20,
+                                generateLabels: function(chart) {
+                                    const original = window.Chart.overrides.pie.plugins.legend.labels.generateLabels;
+                                    const labels = original.call(this, chart);
+                                    const { data } = chart;
+                                    if (data.labels.length && data.datasets.length) {
+                                        const total = data.datasets[0].data.reduce((a, b) => a + b, 0);
+                                        labels.forEach(label => {
+                                            const value = data.datasets[0].data[label.index];
+                                            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                                            const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+                                            label.text = `${data.labels[label.index]}: ${formattedValue} (${percentage}%)`;
+                                        });
+                                    }
+                                    return labels;
+                                }
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed !== null) {
+                                        const value = context.parsed;
+                                        const total = context.chart.data.datasets[0].data.reduce((a, b) => a + b, 0);
+                                        const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                                        label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value) + ` (${percentage}%)`;
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Cleanup function to destroy chart instance on component unmount
+        return () => {
+            if (chartInstance.current) {
+                chartInstance.current.destroy();
+            }
+        };
+    }, [data]); // Rerun effect when data changes
+
+    return (
+        <div className="relative h-72 md:h-80">
+            <canvas ref={chartRef}></canvas>
+        </div>
+    );
+}
+
+function LineChart({ data }) {
+    const chartRef = useRef(null);
+    const chartInstance = useRef(null);
+
+    useEffect(() => {
+        if (chartInstance.current) {
+            chartInstance.current.destroy();
+        }
+
+        if (window.Chart && chartRef.current && data) {
+            const ctx = chartRef.current.getContext('2d');
+            chartInstance.current = new window.Chart(ctx, {
+                type: 'line',
+                data: data,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                color: '#9ca3af', // text-gray-400
+                            },
+                            grid: {
+                                color: 'rgba(107, 114, 128, 0.3)', // gray-500 with opacity
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#9ca3af',
+                            },
+                            grid: {
+                                color: 'rgba(107, 114, 128, 0.1)',
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#d1d5db', // text-gray-300
+                            }
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed.y !== null) {
+                                        label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(context.parsed.y);
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    },
+                    interaction: { mode: 'index', intersect: false },
+                }
+            });
+        }
+
+        return () => { if (chartInstance.current) { chartInstance.current.destroy(); } };
+    }, [data]);
+
+    return (
+        <div className="relative h-80 md:h-96">
+            <canvas ref={chartRef}></canvas>
+        </div>
+    );
+}
+
+
+function DashboardView({ totals, revenues, expenses, allRevenues, allExpenses, formatCurrency, vendors, displayDateRange }) {
     const [expandedExpenseGroups, setExpandedExpenseGroups] = useState({});
+    const [lineChartFilter, setLineChartFilter] = useState('rev_exp_profit');
 
     const toggleExpenseGroup = (category) => {
         setExpandedExpenseGroups(prev => ({...prev, [category]: !prev[category]}));
@@ -664,6 +844,186 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
 
         return { groups, sortedCategories };
     }, [expenses]);
+
+
+    const expenseChartData = useMemo(() => {
+        if (!groupedRecentExpenses || groupedRecentExpenses.sortedCategories.length === 0) return null;
+        
+        const labels = groupedRecentExpenses.sortedCategories;
+        const data = labels.map(cat => groupedRecentExpenses.groups[cat].total);
+        
+        return {
+            labels,
+            datasets: [{
+                data,
+                backgroundColor: ['#818cf8', '#f87171', '#fbbf24', '#34d399', '#60a5fa', '#f472b6', '#a78bfa', '#c084fc', '#f97316', '#eab308', '#22c55e', '#0ea5e9'],
+                borderColor: '#1f2937', // bg-gray-800
+                borderWidth: 2,
+            }]
+        };
+    }, [groupedRecentExpenses]);
+
+    const revenueChartData = useMemo(() => {
+        if (!revenues || revenues.length === 0) return null;
+
+        const sources = revenues.reduce((acc, rev) => {
+            const source = rev.source || 'Unspecified';
+            const totalAmount = (parseFloat(rev.checkAmount) || 0) + (parseFloat(rev.cashAmount) || 0);
+            if (!acc[source]) {
+                acc[source] = 0;
+            }
+            acc[source] += totalAmount;
+            return acc;
+        }, {});
+
+        const labels = Object.keys(sources);
+        const data = Object.values(sources);
+
+        return {
+            labels,
+            datasets: [{
+                data,
+                backgroundColor: ['#34d399', '#60a5fa', '#f472b6', '#a78bfa'],
+                borderColor: '#1f2937',
+                borderWidth: 2,
+            }]
+        };
+    }, [revenues]);
+
+    const lineChartData = useMemo(() => {
+        // Generate the last 12 rolling months from today
+        const last12Months = [];
+        const today = new Date();
+        for (let i = 11; i >= 0; i--) {
+            const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            last12Months.push(`${year}-${month}`);
+        }
+        
+        const labels = last12Months.map(monthStr => {
+            const [year, m] = monthStr.split('-');
+            return new Date(year, m - 1, 1).toLocaleString('default', { month: 'short', year: '2-digit' });
+        });
+
+        const chartColors = ['#818cf8', '#f87171', '#fbbf24', '#34d399', '#60a5fa', '#f472b6', '#a78bfa'];
+
+
+        switch(lineChartFilter) {
+            case 'revenue_by_source': {
+                if (allRevenues.length === 0) return null;
+                const revenueSources = [...new Set(allRevenues.map(r => r.source || 'Unspecified'))];
+
+                const monthlyRevenueData = allRevenues.reduce((acc, r) => {
+                    const month = (r.date || '').substring(0, 7);
+                    if (!month) return acc;
+                    const source = r.source || 'Unspecified';
+                    if (!acc[month]) acc[month] = {};
+                    acc[month][source] = (acc[month][source] || 0) + (parseFloat(r.checkAmount) || 0) + (parseFloat(r.cashAmount) || 0);
+                    return acc;
+                }, {});
+
+                const datasets = revenueSources.map((source, index) => {
+                    const data = last12Months.map(m => monthlyRevenueData[m]?.[source] || 0);
+                    const color = chartColors[index % chartColors.length];
+                    return {
+                        label: source,
+                        data,
+                        borderColor: color,
+                        backgroundColor: `${color}1A`, // Add alpha for fill
+                        fill: true,
+                        tension: 0.3
+                    };
+                });
+                return { labels, datasets };
+            }
+            
+            case 'expenses_wages':
+            case 'expenses_cogs_supplies':
+            case 'expenses_utilities': {
+                let categoryExpenses;
+                let label;
+                let color;
+
+                switch(lineChartFilter) {
+                    case 'expenses_wages':
+                        categoryExpenses = allExpenses.filter(e => e.category === 'Wages');
+                        label = 'Wages';
+                        color = '#f472b6'; // Pink
+                        break;
+                    case 'expenses_cogs_supplies':
+                        categoryExpenses = allExpenses.filter(e => e.category === 'COGS' || e.category === 'Supplies');
+                        label = 'COGS & Supplies';
+                        color = '#f97316'; // Orange
+                        break;
+                    case 'expenses_utilities':
+                        categoryExpenses = allExpenses.filter(e => e.category === 'Utilities');
+                        label = 'Utilities';
+                        color = '#eab308'; // Yellow
+                        break;
+                }
+                
+                if (!categoryExpenses || categoryExpenses.length === 0) return null;
+
+                const monthlyExpenseData = categoryExpenses.reduce((acc, e) => {
+                    const month = (e.date || '').substring(0, 7);
+                    if (!month) return acc;
+                    acc[month] = (acc[month] || 0) + parseFloat(e.amount || 0);
+                    return acc;
+                }, {});
+
+                const data = last12Months.map(m => monthlyExpenseData[m] || 0);
+                return {
+                    labels,
+                    datasets: [{
+                        label,
+                        data,
+                        borderColor: color,
+                        backgroundColor: `${color}1A`, // color with alpha
+                        fill: true,
+                        tension: 0.3
+                    }]
+                };
+            }
+
+            case 'rev_exp_profit':
+            default: {
+                const allTransactions = [
+                    ...allRevenues.map(r => ({ type: 'revenue', date: r.date, amount: (parseFloat(r.checkAmount) || 0) + (parseFloat(r.cashAmount) || 0) })),
+                    ...allExpenses.map(e => ({ type: 'expense', date: e.date, amount: parseFloat(e.amount || 0) }))
+                ];
+
+                if (allTransactions.length === 0) return null;
+
+                const monthlyData = allTransactions.reduce((acc, t) => {
+                    if (!t.date) return acc;
+                    const month = t.date.substring(0, 7); // YYYY-MM format
+                    if (!acc[month]) {
+                        acc[month] = { revenue: 0, expense: 0 };
+                    }
+                    if (t.type === 'revenue') {
+                        acc[month].revenue += t.amount;
+                    } else {
+                        acc[month].expense += t.amount;
+                    }
+                    return acc;
+                }, {});
+
+                const revenueData = last12Months.map(m => monthlyData[m]?.revenue || 0);
+                const expenseData = last12Months.map(m => monthlyData[m]?.expense || 0);
+                const netData = last12Months.map(m => (monthlyData[m]?.revenue || 0) - (monthlyData[m]?.expense || 0));
+
+                return {
+                    labels,
+                    datasets: [
+                        { label: 'Revenue', data: revenueData, borderColor: '#34d399', backgroundColor: 'rgba(52, 211, 153, 0.1)', fill: true, tension: 0.3 },
+                        { label: 'Expenses', data: expenseData, borderColor: '#f87171', backgroundColor: 'rgba(248, 113, 113, 0.1)', fill: true, tension: 0.3 },
+                        { label: 'Net Profit', data: netData, borderColor: '#818cf8', backgroundColor: 'rgba(129, 140, 248, 0.1)', fill: true, tension: 0.3 }
+                    ]
+                };
+            }
+        }
+    }, [allRevenues, allExpenses, lineChartFilter]);
 
 
     const handlePdfDownload = () => {
@@ -791,6 +1151,22 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
         XLSX.writeFile(wb, `OneKitchen_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
     };
 
+    const ChartFilterButton = ({ value, label }) => {
+        const isActive = lineChartFilter === value;
+        return (
+            <button
+                onClick={() => setLineChartFilter(value)}
+                className={`text-xs font-semibold px-3 py-1 rounded-full transition-colors duration-200 ${
+                    isActive
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-gray-700/50 text-gray-300 hover:bg-gray-700'
+                }`}
+            >
+                {label}
+            </button>
+        );
+    };
+
     return (
         <div className="space-y-8">
             <div className="flex justify-end gap-4">
@@ -808,63 +1184,122 @@ function DashboardView({ totals, revenues, expenses, formatCurrency, vendors, di
                     <p className={`text-4xl font-bold ${totals.netProfit >= 0 ? 'text-indigo-400' : 'text-orange-400'}`}>{formatCurrency(totals.netProfit)}</p>
                 </Card>
             </div>
+
+            <CollapsibleCard title="Profit & Loss Trend (Last 12 Months)">
+                <div className="flex flex-wrap gap-2 mb-4">
+                    <ChartFilterButton value="rev_exp_profit" label="Rev/Exp/Profit" />
+                    <ChartFilterButton value="revenue_by_source" label="Revenue by Source" />
+                    <ChartFilterButton value="expenses_wages" label="Expenses - Wages" />
+                    <ChartFilterButton value="expenses_cogs_supplies" label="Expenses - COGS & Supplies" />
+                    <ChartFilterButton value="expenses_utilities" label="Expenses - Utilities" />
+                </div>
+                {lineChartData ? (
+                    <LineChart data={lineChartData} />
+                ) : (
+                    <div className="flex items-center justify-center h-80 text-gray-500">
+                        No data available for this view.
+                    </div>
+                )}
+            </CollapsibleCard>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                 <Card title="Revenue">
-                    <ul className="space-y-3">
-                        {revenues.length > 0 ? revenues.map(r => {
-                            const totalAmount = (parseFloat(r.checkAmount) || 0) + (parseFloat(r.cashAmount) || 0);
-                             return (
-                                <li key={r.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
-                                   <div>
-                                       <p className="text-gray-300">{r.source}</p>
-                                       <p className="text-xs text-gray-500">{r.date}</p>
-                                   </div>
-                                   <span className="text-green-400 font-semibold">{formatCurrency(totalAmount)}</span>
-                                </li>
-                             );
-                        }) : <p className="text-gray-500">No revenue entries for this period.</p>}
-                    </ul>
-                 </Card>
-                 <Card title="Expenses">
-                    <ul className="space-y-2">
-                        {groupedRecentExpenses && groupedRecentExpenses.sortedCategories.length > 0 ? (
-                            groupedRecentExpenses.sortedCategories.map(category => {
-                                const group = groupedRecentExpenses.groups[category];
-                                const isExpanded = expandedExpenseGroups[category];
-                                return (
-                                    <li key={category}>
-                                        <div onClick={() => toggleExpenseGroup(category)} className="flex justify-between items-center p-2 bg-gray-700/40 rounded-md cursor-pointer hover:bg-gray-700/60">
-                                            <div className="font-semibold text-gray-300">
-                                                <span className="mr-2 text-indigo-400">{isExpanded ? '▼' : '►'}</span>
-                                                {category} ({group.transactions.length})
-                                            </div>
-                                            <span className="font-semibold text-red-400">{formatCurrency(group.total)}</span>
-                                        </div>
-                                        {isExpanded && (
-                                            <ul className="pl-4 mt-2 space-y-3 pt-2">
-                                                {group.transactions.map(e => (
-                                                    <li key={e.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
-                                                    <div>
-                                                        <p className="text-gray-300">{getExpenseDisplayLine(e)}</p>
-                                                        <p className="text-xs text-gray-500">{e.date}</p>
-                                                    </div>
-                                                    <span className="text-red-400 font-semibold">{formatCurrency(e.amount)}</span>
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        )}
-                                    </li>
-                                )
-                            })
+                {/* Left Column - Revenue */}
+                <div className="space-y-6">
+                    <CollapsibleCard title="Revenue Sources Breakdown">
+                         {revenueChartData ? (
+                            <PieChart data={revenueChartData} />
                         ) : (
-                            <p className="text-gray-500">No expense entries for this period.</p>
+                            <div className="flex items-center justify-center h-72 text-gray-500">No revenue data for this period.</div>
                         )}
-                    </ul>
-                 </Card>
+                    </CollapsibleCard>
+                    <Card title="Revenue Details">
+                        <ul className="space-y-3">
+                            {revenues.length > 0 ? revenues.map(r => {
+                                const totalAmount = (parseFloat(r.checkAmount) || 0) + (parseFloat(r.cashAmount) || 0);
+                                 return (
+                                    <li key={r.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
+                                       <div>
+                                           <p className="text-gray-300">{r.source}</p>
+                                           <p className="text-xs text-gray-500">{r.date}</p>
+                                       </div>
+                                       <span className="text-green-400 font-semibold">{formatCurrency(totalAmount)}</span>
+                                    </li>
+                                 );
+                            }) : <p className="text-gray-500">No revenue entries for this period.</p>}
+                        </ul>
+                     </Card>
+                </div>
+
+                {/* Right Column - Expenses */}
+                <div className="space-y-6">
+                    <CollapsibleCard title="Expense Breakdown">
+                        {expenseChartData ? (
+                            <PieChart data={expenseChartData} />
+                        ) : (
+                            <div className="flex items-center justify-center h-72 text-gray-500">No expense data for this period.</div>
+                        )}
+                    </CollapsibleCard>
+                    <Card title="Expense Details">
+                        <ul className="space-y-2">
+                            {groupedRecentExpenses && groupedRecentExpenses.sortedCategories.length > 0 ? (
+                                groupedRecentExpenses.sortedCategories.map(category => {
+                                    const group = groupedRecentExpenses.groups[category];
+                                    const isExpanded = expandedExpenseGroups[category];
+                                    return (
+                                        <li key={category}>
+                                            <div onClick={() => toggleExpenseGroup(category)} className="flex justify-between items-center p-2 bg-gray-700/40 rounded-md cursor-pointer hover:bg-gray-700/60">
+                                                <div className="font-semibold text-gray-300">
+                                                    <span className="mr-2 text-indigo-400">{isExpanded ? '▼' : '►'}</span>
+                                                    {category} ({group.transactions.length})
+                                                </div>
+                                                <span className="font-semibold text-red-400">{formatCurrency(group.total)}</span>
+                                            </div>
+                                            {isExpanded && (
+                                                <ul className="pl-4 mt-2 space-y-3 pt-2">
+                                                    {group.transactions.map(e => (
+                                                        <li key={e.id} className="flex justify-between items-center border-b border-gray-700/50 pb-2">
+                                                        <div>
+                                                            <p className="text-gray-300">{getExpenseDisplayLine(e)}</p>
+                                                            <p className="text-xs text-gray-500">{e.date}</p>
+                                                        </div>
+                                                        <span className="text-red-400 font-semibold">{formatCurrency(e.amount)}</span>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            )}
+                                        </li>
+                                    )
+                                })
+                            ) : (
+                                <p className="text-gray-500">No expense entries for this period.</p>
+                            )}
+                        </ul>
+                     </Card>
+                </div>
             </div>
         </div>
     );
 }
+
+const GroupingControl = ({ groupBy, onGroupByChange }) => {
+    const options = ['category', 'date', 'vendor', 'amount'];
+    return (
+        <div className="flex items-center gap-2 bg-gray-900/50 border border-gray-700/50 rounded-full p-1">
+            <span className="text-sm font-semibold text-gray-400 pl-3 pr-1">Group By:</span>
+            {options.map(opt => (
+                <button
+                    key={opt}
+                    onClick={() => onGroupByChange(opt)}
+                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors duration-300 capitalize ${
+                        groupBy === opt ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700/50 hover:text-white'
+                    }`}
+                >
+                    {opt}
+                </button>
+            ))}
+        </div>
+    );
+};
 
 function CrudView({ title, data, db, userId, appId, collectionName, fields, formatCurrency, vendors }) {
     const [showForm, setShowForm] = useState(false);
@@ -880,43 +1315,92 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const [showStatementUpload, setShowStatementUpload] = useState(false);
     const [wageFieldStatus, setWageFieldStatus] = useState({});
     const [showWageWarning, setShowWageWarning] = useState(false);
+    const [groupBy, setGroupBy] = useState('category');
 
+    const getVendorName = (vendorId) => {
+        if (!vendors || !vendorId) return 'N/A';
+        const vendor = vendors.find(v => v.id === vendorId);
+        return vendor ? vendor.name : 'Unknown Vendor';
+    };
+
+    const handleGroupByChange = (newGroupBy) => {
+        setGroupBy(newGroupBy);
+    };
+
+    const getVendorNameFromItem = (item) => {
+        const vendorName = getVendorName(item.vendorId);
+        if (vendorName === 'N/A' || vendorName === 'Unknown Vendor') {
+            if (item.description && item.description.includes('---')) {
+                return item.description.split('---')[0];
+            }
+            return 'Unassigned';
+        }
+        return vendorName;
+    };
+    
+    const processedData = useMemo(() => {
+        if (collectionName !== 'expenses' || !data) {
+            return null;
+        }
+
+        switch (groupBy) {
+            case 'date': {
+                const groups = data.reduce((acc, expense) => {
+                    const month = expense.date ? expense.date.substring(0, 7) : 'Undated';
+                    if (!acc[month]) acc[month] = { transactions: [], total: 0 };
+                    acc[month].transactions.push(expense);
+                    acc[month].total += parseFloat(expense.amount || 0);
+                    return acc;
+                }, {});
+                const sortedKeys = Object.keys(groups).sort().reverse();
+                return { groups, sortedKeys, isGrouped: true };
+            }
+            case 'vendor': {
+                 const groups = data.reduce((acc, expense) => {
+                    const vendorName = getVendorNameFromItem(expense);
+                    if (!acc[vendorName]) acc[vendorName] = { transactions: [], total: 0 };
+                    acc[vendorName].transactions.push(expense);
+                    acc[vendorName].total += parseFloat(expense.amount || 0);
+                    return acc;
+                }, {});
+                const sortedKeys = Object.keys(groups).sort((a, b) => groups[b].total - groups[a].total);
+                return { groups, sortedKeys, isGrouped: true };
+            }
+            case 'amount': {
+                const sortedTransactions = [...data].sort((a, b) => parseFloat(b.amount || 0) - parseFloat(a.amount || 0));
+                return { transactions: sortedTransactions, isGrouped: false };
+            }
+            case 'category':
+            default: {
+                const groups = data.reduce((acc, expense) => {
+                    const category = expense.category || 'Uncategorized';
+                    if (!acc[category]) acc[category] = { transactions: [], total: 0 };
+                    acc[category].transactions.push(expense);
+                    acc[category].total += parseFloat(expense.amount || 0);
+                    return acc;
+                }, {});
+                const sortedKeys = Object.keys(groups).sort((a, b) => groups[b].total - groups[a].total);
+                return { groups, sortedKeys, isGrouped: true };
+            }
+        }
+    }, [data, collectionName, groupBy, vendors]);
+    
     useEffect(() => {
-        if (collectionName === 'expenses' && data) {
-            const categories = [...new Set(data.map(item => item.category || 'Uncategorized'))];
-            const allExpanded = categories.reduce((acc, category) => {
-                acc[category] = true;
+        // This effect will now set the initial expanded state whenever the grouping changes.
+        if (collectionName === 'expenses' && processedData && processedData.isGrouped) {
+             const allExpanded = processedData.sortedKeys.reduce((acc, key) => {
+                acc[key] = true; // Default all groups to be expanded
                 return acc;
             }, {});
             setExpandedGroups(allExpanded);
+        } else {
+             setExpandedGroups({}); // Clear for non-grouped views or other collections
         }
-    }, [data, collectionName]);
+    }, [processedData, collectionName]);
 
     const toggleGroup = (groupKey) => {
         setExpandedGroups(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
     };
-
-    const groupedExpenses = useMemo(() => {
-        if (collectionName !== 'expenses' || !data) {
-            return null;
-        }
-        const groups = data.reduce((acc, expense) => {
-            const category = expense.category || 'Uncategorized';
-            if (!acc[category]) {
-                acc[category] = {
-                    transactions: [],
-                    total: 0,
-                };
-            }
-            acc[category].transactions.push(expense);
-            acc[category].total += parseFloat(expense.amount || 0);
-            return acc;
-        }, {});
-
-        const sortedCategories = Object.keys(groups).sort((a, b) => groups[b].total - groups[a].total);
-
-        return { groups, sortedCategories };
-    }, [data, collectionName]);
 
      const handleBatchSave = async (transactions) => {
         if (!db || !userId || transactions.length === 0) return;
@@ -928,10 +1412,6 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             const docRef = doc(expensesCollection);
             const matchedVendor = vendors.find(v => v.name.toLowerCase() === t.vendor.toLowerCase());
 
-            // Prepare the data to be saved.
-            // If a vendor is matched, we store its ID and the clean description from the parser.
-            // If not matched, we store a null ID and combine the parsed vendor name and description with '---'
-            // so the display logic can correctly separate them.
             const dataToSave = {
                 date: t.date || '',
                 vendorId: matchedVendor ? matchedVendor.id : null,
@@ -977,9 +1457,9 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 const today = new Date();
                 let lastSunday = new Date(today);
                 lastSunday.setDate(today.getDate() - today.getDay());
-                lastSunday.setHours(12, 0, 0, 0); // Use noon to avoid timezone rollover issues
+                lastSunday.setHours(12, 0, 0, 0); 
 
-                for (let i = 0; i < 13; i++) { // 13 periods = approx 6 months
+                for (let i = 0; i < 13; i++) { 
                     const endDate = new Date(lastSunday);
                     const startDate = new Date(lastSunday);
                     startDate.setDate(startDate.getDate() - 13);
@@ -1009,13 +1489,11 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
             let initialVendorName = '';
             let initialDescription = itemData.description || '';
 
-            // If it's an unmatched vendor from a statement, parse the description
             if (!itemData.vendorId && itemData.description && itemData.description.includes('---')) {
                 const parts = itemData.description.split('---');
                 initialVendorName = parts[0];
                 initialDescription = parts[1];
             } 
-            // If it's a matched vendor, look up its name
             else if (itemData.vendorId && vendors && vendors.length > 0) {
                 const vendor = vendors.find(v => v.id === itemData.vendorId);
                 initialVendorName = vendor ? vendor.name : '';
@@ -1031,7 +1509,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 setExpenseRows(Array(10).fill().map(() => getInitialFormData('multiple')));
              }
         }
-    }, [editingItem, fields, collectionName, showForm, vendors]); // Rerun when form is opened
+    }, [editingItem, fields, collectionName, showForm, vendors]); 
     
     const handleInputChange = (e) => {
         const { name, value, type, checked } = e.target;
@@ -1068,7 +1546,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
      const handleMultipleInputChange = (index, e) => {
         const { name, value, type, checked } = e.target;
 
-        if (name === 'vendorName') { // Special handling for the vendor input
+        if (name === 'vendorName') { 
             const newRows = [...expenseRows];
             newRows[index].vendorName = value;
     
@@ -1080,7 +1558,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 newRows[index].vendorId = '';
             }
             setExpenseRows(newRows);
-        } else { // Generic handling for all other inputs
+        } else { 
             const newRows = [...expenseRows];
             newRows[index][name] = type === 'checkbox' ? checked : value;
             setExpenseRows(newRows);
@@ -1104,23 +1582,23 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         const currentFieldIndex = fieldOrder.indexOf(field);
 
         let nextField, nextIndex;
-        if (e.shiftKey) { // Backwards
+        if (e.shiftKey) { 
             if (index > 0) {
                 nextField = field;
                 nextIndex = index - 1;
-            } else { // at the top of a column
+            } else { 
                 if (currentFieldIndex > 0) {
                     nextField = fieldOrder[currentFieldIndex - 1];
                     nextIndex = expenseRows.length - 1;
                 } else {
-                    return; // at very first element
+                    return; 
                 }
             }
-        } else { // Forwards
+        } else { 
             if (index < expenseRows.length - 1) {
                 nextField = field;
                 nextIndex = index + 1;
-            } else { // at the bottom of a column
+            } else { 
                 if (currentFieldIndex < fieldOrder.length - 1) {
                     nextField = fieldOrder[currentFieldIndex + 1];
                     nextIndex = 0;
@@ -1203,14 +1681,13 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
 
             if (invalidRows.length > 0) {
                 console.error("Validation failed for some rows. Please complete all required fields for entries with an amount.");
-                // We still proceed to save the valid ones.
             }
 
             const validRowsToSave = rowsWithAmount.filter(row => row.vendorName && row.category && row.paymentType);
 
             if (validRowsToSave.length === 0) {
                 if(invalidRows.length === 0) console.log("No expense rows to save.");
-                if (invalidRows.length > 0) return; // if there are errors but nothing to save, stay on form
+                if (invalidRows.length > 0) return;
                 closeForm();
                 return;
             }
@@ -1338,18 +1815,12 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const closeForm = () => {
         setShowForm(false);
         setEditingItem(null);
-        setExpenseRows([]); // Reset multiple rows form
+        setExpenseRows([]); 
         setRowErrors([]);
         setShowWageWarning(false);
         setWageFieldStatus({});
     };
 
-    const getVendorName = (vendorId) => {
-        if (!vendors || !vendorId) return 'N/A';
-        const vendor = vendors.find(v => v.id === vendorId);
-        return vendor ? vendor.name : 'Unknown Vendor';
-    };
-    
     const getCategoryName = (item) => {
         if(collectionName === 'expenses' && item.vendorId && !item.category) {
             const vendor = vendors.find(v => v.id === item.vendorId);
@@ -1388,7 +1859,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         const getRequiredStatus = (f) => {
             if (collectionName === 'vendors') return ['name', 'category'].includes(f);
             if(collectionName === 'expenses') {
-                if(addMode === 'multiple') return false; // validation is handled manually for multi-add
+                if(addMode === 'multiple') return false; 
                 return ['date', 'vendorId', 'category', 'amount', 'paymentType'].includes(f);
             }
             if (['checkAmount', 'cashAmount', 'amount'].includes(f)) return false;
@@ -1469,7 +1940,6 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                     );
                  }
                  
-                 // Fallback for multiple-add mode - now a typeahead input
                  return (
                     <>
                         <input
@@ -1696,17 +2166,20 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     return (
         <>
             <Card title={`${title} Records`}>
-                <div className="flex justify-end flex-wrap mb-6 gap-4">
-                    {collectionName === 'expenses' ? (
-                        <>
-                            <button onClick={() => openForm(null, 'single')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Single Expense </button>
-                            <button onClick={() => openForm(null, 'multiple')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Multiple Expenses </button>
-                            <button onClick={() => openForm(null, 'wages')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Wages </button>
-                            <button onClick={() => setShowStatementUpload(true)} className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add CC/Bank Statement </button>
-                        </>
-                    ) : (
-                        <button onClick={() => openForm()} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add {title} </button>
-                    )}
+                <div className="flex justify-between items-center flex-wrap mb-6 gap-4">
+                     {collectionName === 'expenses' && <GroupingControl groupBy={groupBy} onGroupByChange={handleGroupByChange} />}
+                    <div className="flex justify-end flex-wrap gap-4 flex-grow">
+                        {collectionName === 'expenses' ? (
+                            <>
+                                <button onClick={() => openForm(null, 'single')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Single Expense </button>
+                                <button onClick={() => openForm(null, 'multiple')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Multiple Expenses </button>
+                                <button onClick={() => openForm(null, 'wages')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add Wages </button>
+                                <button onClick={() => setShowStatementUpload(true)} className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add CC/Bank Statement </button>
+                            </>
+                        ) : (
+                            <button onClick={() => openForm()} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg"> <PlusIcon /> Add {title} </button>
+                        )}
+                    </div>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -1719,30 +2192,43 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                         </thead>
                          <tbody>
                             { data && data.length > 0 ? (
-                                collectionName === 'expenses' && groupedExpenses ? (
-                                    groupedExpenses.sortedCategories.map(category => {
-                                        const group = groupedExpenses.groups[category];
-                                        const isExpanded = expandedGroups[category];
-                                        return (
-                                            <React.Fragment key={category}>
-                                                <tr className="bg-gray-700/30 font-semibold cursor-pointer hover:bg-gray-700/50" onClick={() => toggleGroup(category)}>
-                                                    <td className="p-4" colSpan={fields.length}>
-                                                        <div className="flex justify-between items-center">
-                                                            <div>
-                                                                <span className="mr-3 text-lg text-indigo-400">{isExpanded ? '▼' : '►'}</span>
-                                                                {category} ({group.transactions.length})
+                                (collectionName === 'expenses' && processedData) ? (
+                                    processedData.isGrouped ? (
+                                        processedData.sortedKeys.map(key => {
+                                            const group = processedData.groups[key];
+                                            const isExpanded = expandedGroups[key];
+
+                                            const formatMonthYear = (monthStr) => {
+                                                if (monthStr === 'Undated') return 'Undated';
+                                                const [year, month] = monthStr.split('-');
+                                                const date = new Date(year, parseInt(month, 10) - 1, 2); 
+                                                return date.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+                                            };
+                                            const displayKey = groupBy === 'date' ? formatMonthYear(key) : key;
+
+                                            return (
+                                                <React.Fragment key={key}>
+                                                    <tr className="bg-gray-700/30 font-semibold cursor-pointer hover:bg-gray-700/50" onClick={() => toggleGroup(key)}>
+                                                        <td className="p-4" colSpan={fields.length}>
+                                                            <div className="flex justify-between items-center">
+                                                                <div>
+                                                                    <span className="mr-3 text-lg text-indigo-400">{isExpanded ? '▼' : '►'}</span>
+                                                                    {displayKey} ({group.transactions.length})
+                                                                </div>
+                                                                <span className="font-bold text-lg">{formatCurrency(group.total)}</span>
                                                             </div>
-                                                            <span className="font-bold text-lg">{formatCurrency(group.total)}</span>
-                                                        </div>
-                                                    </td>
-                                                    <td className="p-4"></td>
-                                                </tr>
-                                                {isExpanded && group.transactions.map(item => renderItemRow(item, true))}
-                                            </React.Fragment>
-                                        );
-                                    })
+                                                        </td>
+                                                        <td className="p-4"></td>
+                                                    </tr>
+                                                    {isExpanded && group.transactions.map(item => renderItemRow(item, true))}
+                                                </React.Fragment>
+                                            );
+                                        })
+                                    ) : (
+                                        processedData.transactions.map(item => renderItemRow(item, false))
+                                    )
                                 ) : (
-                                    data.map(item => renderItemRow(item))
+                                    data.map(item => renderItemRow(item, false))
                                 )
                             ) : (
                                 <tr>
@@ -1812,7 +2298,7 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         if (selectedFile && selectedFile.type === 'text/csv') {
             setFile(selectedFile);
             setError('');
-            setTransactions([]); // Reset on new file select
+            setTransactions([]); 
             setAccountInfo(null);
         } else {
             setFile(null);
@@ -1841,7 +2327,6 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
 
     const autoCategorize = (vendor, defaultCategory = 'General Expense') => {
         const vendorLower = vendor.toLowerCase();
-        // Specific checks for ambiguous vendors first
         if (vendorLower.includes('costco gas')) {
             return 'Auto & Travel';
         }
@@ -1869,7 +2354,6 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         setAccountInfo({ bank: 'Bilt', name: 'Mastercard', number: '7559' });
         const lines = csvText.trim().split('\n');
         
-        // Handle optional header
         if (lines.length > 0 && lines[0].toLowerCase().includes('transaction date')) {
             lines.shift(); 
         }
@@ -1888,7 +2372,6 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
 
             const amount = parseFloat(amountStr);
 
-            // Filter out payments and credits
             if (amount >= 0) return; 
             if (paymentKeywords.some(keyword => vendor.toLowerCase().includes(keyword))) {
                 return;
@@ -1900,7 +2383,6 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
             
             let [month, day, year] = dateParts;
 
-            // Handle both YY and YYYY date formats
             if (year.length === 2) {
                 year = `20${year}`;
             }
@@ -2000,12 +2482,11 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         const parsed = [];
         lines.forEach(line => {
             const values = line.split(',');
-            if (values.length < 6 || !values[5] || values[4].toLowerCase() === 'payment/credit') return; // Must have a debit, not a payment
+            if (values.length < 6 || !values[5] || values[4].toLowerCase() === 'payment/credit') return;
 
             const debit = parseFloat(values[5]);
             if (debit > 0) {
                 let transactionDate = values[0];
-                // Normalize date to YYYY-MM-DD format
                 if (transactionDate.includes('/')) {
                     const parts = transactionDate.split('/');
                     const month = parts[0].padStart(2, '0');
@@ -2018,7 +2499,7 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
                 }
 
                  parsed.push({
-                    date: transactionDate, // Use normalized date
+                    date: transactionDate, 
                     vendor: values[3].replace(/&amp;/g, '&'),
                     amount: debit,
                     category: autoCategorize(values[3], values[4] || 'General Expense'),
@@ -2044,7 +2525,6 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
                 const csvText = e.target.result;
                 let parsedData = [];
 
-                // Detect file type based on header or content
                 if (csvText.includes('"Transaction Date","Amount","Reward Multiplier"') || csvText.includes('BPS*BILT REWARDS')) {
                     parsedData = parseBiltCsv(csvText);
                 } else if (csvText.includes('Account Number,Post Date,Check,Description,Debit,Credit')) {
@@ -2168,11 +2648,4 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
-
-
-
-
-
-
-
 
