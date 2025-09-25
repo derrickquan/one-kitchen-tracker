@@ -1,4 +1,4 @@
-// v1.4.2 - Combined COGS and Supplies filter on dashboard chart.
+// v1.4.4 - Set grouped expense views to be collapsed by default.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -363,6 +363,12 @@ export default function App() {
                     start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
                     end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
                     break;
+                case 'last6Months':
+                    end = new Date();
+                    start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+                    start.setHours(0, 0, 0, 0);
+                    end.setHours(23, 59, 59, 999);
+                    break;
                 case 'lastQuarter':
                     const currentQuarter = Math.floor(now.getMonth() / 3);
                     const startMonth = currentQuarter * 3 - 3;
@@ -457,6 +463,10 @@ export default function App() {
             case 'lastMonth':
                 start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
                 end = new Date(now.getFullYear(), now.getMonth(), 0);
+                break;
+            case 'last6Months':
+                end = new Date();
+                start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
                 break;
             case 'lastQuarter':
                  const currentQuarter = Math.floor(now.getMonth() / 3);
@@ -572,7 +582,7 @@ function FilterBar({ dateFilter, onDateFilterChange, reportTypeFilter, onReportT
     const trailingMonths = useMemo(() => {
         const months = [];
         let date = new Date();
-        for (let i = 0; i < 13; i++) {
+        for (let i = 0; i < 9; i++) {
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const year = date.getFullYear();
             months.push({
@@ -603,6 +613,7 @@ function FilterBar({ dateFilter, onDateFilterChange, reportTypeFilter, onReportT
                 <option value="all">All Time</option>
                 <option value="thisMonth">This Month</option>
                 <option value="lastMonth">Last Month</option>
+                <option value="last6Months">Last 6 Months</option>
                 <option value="lastQuarter">Last Quarter</option>
                 {trailingMonths.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 <option value="custom">Custom Range</option>
@@ -1388,11 +1399,11 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     useEffect(() => {
         // This effect will now set the initial expanded state whenever the grouping changes.
         if (collectionName === 'expenses' && processedData && processedData.isGrouped) {
-             const allExpanded = processedData.sortedKeys.reduce((acc, key) => {
-                acc[key] = true; // Default all groups to be expanded
+             const allCollapsed = processedData.sortedKeys.reduce((acc, key) => {
+                acc[key] = false; // Default all groups to be collapsed
                 return acc;
             }, {});
-            setExpandedGroups(allExpanded);
+            setExpandedGroups(allCollapsed);
         } else {
              setExpandedGroups({}); // Clear for non-grouped views or other collections
         }
