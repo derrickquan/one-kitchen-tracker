@@ -1327,6 +1327,8 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const [wageFieldStatus, setWageFieldStatus] = useState({});
     const [showWageWarning, setShowWageWarning] = useState(false);
     const [groupBy, setGroupBy] = useState('category');
+    const [categoryFilter, setCategoryFilter] = useState('all');
+    const [vendorFilter, setVendorFilter] = useState('');
 
     const getVendorName = (vendorId) => {
         if (!vendors || !vendorId) return 'N/A';
@@ -1349,14 +1351,32 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         return vendorName;
     };
     
+    const expenseCategories = useMemo(() => {
+        if (collectionName !== 'expenses') return [];
+        // Use the original `data` prop to populate all possible categories
+        const categories = new Set(data.map(item => item.category).filter(Boolean));
+        return ['all', ...Array.from(categories).sort()];
+    }, [data, collectionName]);
+
+    const locallyFilteredData = useMemo(() => {
+        if (collectionName !== 'expenses') return data;
+
+        return data.filter(item => {
+            const categoryMatch = categoryFilter === 'all' || item.category === categoryFilter;
+            const vendorName = getVendorNameFromItem(item).toLowerCase();
+            const vendorMatch = vendorFilter === '' || vendorName.includes(vendorFilter.toLowerCase());
+            return categoryMatch && vendorMatch;
+        });
+    }, [data, collectionName, categoryFilter, vendorFilter, vendors]);
+
     const processedData = useMemo(() => {
-        if (collectionName !== 'expenses' || !data) {
+        if (collectionName !== 'expenses' || !locallyFilteredData) {
             return null;
         }
 
         switch (groupBy) {
             case 'date': {
-                const groups = data.reduce((acc, expense) => {
+                const groups = locallyFilteredData.reduce((acc, expense) => {
                     const month = expense.date ? expense.date.substring(0, 7) : 'Undated';
                     if (!acc[month]) acc[month] = { transactions: [], total: 0 };
                     acc[month].transactions.push(expense);
@@ -1367,7 +1387,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 return { groups, sortedKeys, isGrouped: true };
             }
             case 'vendor': {
-                 const groups = data.reduce((acc, expense) => {
+                 const groups = locallyFilteredData.reduce((acc, expense) => {
                     const vendorName = getVendorNameFromItem(expense);
                     if (!acc[vendorName]) acc[vendorName] = { transactions: [], total: 0 };
                     acc[vendorName].transactions.push(expense);
@@ -1378,12 +1398,12 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 return { groups, sortedKeys, isGrouped: true };
             }
             case 'amount': {
-                const sortedTransactions = [...data].sort((a, b) => parseFloat(b.amount || 0) - parseFloat(a.amount || 0));
+                const sortedTransactions = [...locallyFilteredData].sort((a, b) => parseFloat(b.amount || 0) - parseFloat(a.amount || 0));
                 return { transactions: sortedTransactions, isGrouped: false };
             }
             case 'category':
             default: {
-                const groups = data.reduce((acc, expense) => {
+                const groups = locallyFilteredData.reduce((acc, expense) => {
                     const category = expense.category || 'Uncategorized';
                     if (!acc[category]) acc[category] = { transactions: [], total: 0 };
                     acc[category].transactions.push(expense);
@@ -1394,7 +1414,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                 return { groups, sortedKeys, isGrouped: true };
             }
         }
-    }, [data, collectionName, groupBy, vendors]);
+    }, [locallyFilteredData, collectionName, groupBy, vendors]);
     
     useEffect(() => {
         // This effect will now set the initial expanded state whenever the grouping changes.
@@ -2178,7 +2198,30 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         <>
             <Card title={`${title} Records`}>
                 <div className="flex justify-between items-center flex-wrap mb-6 gap-4">
-                     {collectionName === 'expenses' && <GroupingControl groupBy={groupBy} onGroupByChange={handleGroupByChange} />}
+                     {collectionName === 'expenses' && (
+                        <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
+                            <GroupingControl groupBy={groupBy} onGroupByChange={handleGroupByChange} />
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-semibold text-gray-400">Filter By:</span>
+                                <select
+                                    value={categoryFilter}
+                                    onChange={(e) => setCategoryFilter(e.target.value)}
+                                    className="w-48 bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+                                    {expenseCategories.map(cat => (
+                                        <option key={cat} value={cat}>{cat === 'all' ? 'All Categories' : cat}</option>
+                                    ))}
+                                </select>
+                                <input
+                                    type="text"
+                                    placeholder="Filter by vendor name..."
+                                    value={vendorFilter}
+                                    onChange={(e) => setVendorFilter(e.target.value)}
+                                    className="w-48 bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                            </div>
+                        </div>
+                     )}
                     <div className="flex justify-end flex-wrap gap-4 flex-grow">
                         {collectionName === 'expenses' ? (
                             <>
@@ -2659,4 +2702,5 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
+
 
