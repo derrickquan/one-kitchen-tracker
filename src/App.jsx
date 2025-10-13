@@ -1794,9 +1794,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         if (collectionName === 'expenses' && (addMode === 'single' || editingItem)) {
             if (!dataToSave.vendorId && vendorNameInput) {
                 dataToSave.vendorId = null;
-                dataToSave.description = dataToSave.description
-                    ? `${vendorNameInput}---${dataToSave.description}`
-                    : vendorNameInput;
+                dataToSave.description = `${vendorNameInput}---${dataToSave.description || ''}`;
             }
         }
         
@@ -2709,6 +2707,7 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
+
 
 
 
