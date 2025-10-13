@@ -1485,14 +1485,21 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
         if (collectionName === 'expenses') {
              const generatePayPeriods = () => {
                 const periods = [];
+                // Anchor the pay periods to a known, fixed date.
+                // October 5, 2025 is the end of a known pay period.
+                const anchorEndDate = new Date('2025-10-05T12:00:00');
                 const today = new Date();
-                let lastSunday = new Date(today);
-                lastSunday.setDate(today.getDate() - today.getDay());
-                lastSunday.setHours(12, 0, 0, 0); 
 
+                // Find the end date of the pay period that contains today's date or is the next one.
+                let firstEndDateInList = new Date(anchorEndDate.getTime());
+                while (firstEndDateInList < today) {
+                    firstEndDateInList.setDate(firstEndDateInList.getDate() + 14);
+                }
+
+                // Generate 13 pay periods backwards from that date.
                 for (let i = 0; i < 13; i++) { 
-                    const endDate = new Date(lastSunday);
-                    const startDate = new Date(lastSunday);
+                    const endDate = new Date(firstEndDateInList);
+                    const startDate = new Date(firstEndDateInList);
                     startDate.setDate(startDate.getDate() - 13);
 
                     const formatDate = (date) => `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}/${date.getFullYear().toString().slice(-2)}`;
@@ -1501,7 +1508,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                     const value = endDate.toISOString().split('T')[0];
 
                     periods.push({ label, value });
-                    lastSunday.setDate(lastSunday.getDate() - 14);
+                    firstEndDateInList.setDate(firstEndDateInList.getDate() - 14);
                 }
                 return periods;
             };
@@ -2702,5 +2709,6 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
+
 
 
