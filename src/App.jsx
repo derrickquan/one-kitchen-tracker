@@ -1,4 +1,4 @@
-// v1.4.4 - Set grouped expense views to be collapsed by default.
+// v1.5.0 - Add database import, export, and purge functionality.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -12,7 +12,8 @@ import {
     updateDoc,
     query,
     writeBatch,
-    setLogLevel
+    setLogLevel,
+    getDocs
 } from 'firebase/firestore';
 
 // --- Helper Components & Icons (as SVGs to keep it in one file) ---
@@ -31,6 +32,9 @@ const CheckIcon = () => (
 );
 const XIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-red-500" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+);
+const SettingsIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
 );
 const LoadingSpinner = () => (
   <div className="flex justify-center items-center h-64">
@@ -495,7 +499,7 @@ export default function App() {
             <div>
                 {
                     {
-                        'dashboard': <DashboardView totals={totals} revenues={filteredRevenues} expenses={filteredExpenses} allRevenues={revenues} allExpenses={expenses} formatCurrency={formatCurrency} vendors={vendors} displayDateRange={displayDateRange} />,
+                        'dashboard': <DashboardView totals={totals} revenues={filteredRevenues} expenses={filteredExpenses} allRevenues={revenues} allExpenses={expenses} formatCurrency={formatCurrency} vendors={vendors} displayDateRange={displayDateRange} db={db} userId={userId} appId={appId} />,
                         'revenue': <CrudView title="Revenue" data={filteredRevenues} db={db} userId={userId} appId={appId} collectionName="revenues" fields={['source', 'date', 'checkAmount', 'cashAmount', 'reportable']} formatCurrency={formatCurrency} />,
                         'expenses': <CrudView title="Expenses" data={filteredExpenses} db={db} userId={userId} appId={appId} collectionName="expenses" fields={['date', 'vendorId', 'category', 'amount', 'paymentType', 'reportable', 'description']} formatCurrency={formatCurrency} vendors={vendors} />,
                         'vendors': <CrudView title="Vendors" data={vendors} db={db} userId={userId} appId={appId} collectionName="vendors" fields={['name', 'category', 'contactPerson', 'email', 'phoneNumber', 'accountNumber']} formatCurrency={formatCurrency} />,
@@ -532,9 +536,14 @@ export default function App() {
                             <NavButton text="Revenue" viewName="revenue" currentView={view} setView={setView} />
                             <NavButton text="Expenses" viewName="expenses" currentView={view} setView={setView} />
                             <NavButton text="Vendors" viewName="vendors" currentView={view} setView={setView} />
-                            <button onClick={handleLogout} className="px-4 py-2 rounded-full text-sm font-medium transition-colors duration-300 text-gray-300 hover:bg-red-600/70 hover:text-white ml-2">
-                                Logout
-                            </button>
+                            <div className="flex items-center ml-2 pl-2 border-l border-gray-700">
+                                <span className="text-sm text-gray-300 px-3 truncate max-w-[150px] md:max-w-xs" title={user.isAnonymous ? 'Guest User' : user.email}>
+                                    {user.isAnonymous ? 'Guest User' : user.email}
+                                </span>
+                                <button onClick={handleLogout} className="px-4 py-2 rounded-full text-sm font-medium transition-colors duration-300 text-gray-300 hover:bg-red-600/70 hover:text-white">
+                                    Logout
+                                </button>
+                            </div>
                         </nav>
                     </div>
                 </header>
@@ -795,8 +804,220 @@ function LineChart({ data }) {
     );
 }
 
+// --- Database Actions Component ---
+function DatabaseActions({ allRevenues, allExpenses, vendors, db, userId, appId }) {
+    const [isOpen, setIsOpen] = useState(false);
+    const [modal, setModal] = useState(null); // 'purge', 'import'
+    const [isLoading, setIsLoading] = useState(false);
+    const [statusMessage, setStatusMessage] = useState({ type: '', text: '' });
+    const dropdownRef = useRef(null);
 
-function DashboardView({ totals, revenues, expenses, allRevenues, allExpenses, formatCurrency, vendors, displayDateRange }) {
+    useEffect(() => {
+        function handleClickOutside(event) {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+                setIsOpen(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, [dropdownRef]);
+
+    useEffect(() => {
+        if (statusMessage.text) {
+            const timer = setTimeout(() => setStatusMessage({ type: '', text: '' }), 5000);
+            return () => clearTimeout(timer);
+        }
+    }, [statusMessage]);
+
+    const handleExport = () => {
+        const exportData = {
+            revenues: allRevenues,
+            expenses: allExpenses,
+            vendors: vendors,
+        };
+        const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(exportData, null, 2))}`;
+        const link = document.createElement("a");
+        link.href = jsonString;
+        const date = new Date().toISOString().split('T')[0];
+        link.download = `one-kitchen-backup-${date}.json`;
+        link.click();
+        setIsOpen(false);
+    };
+
+    const handlePurge = async () => {
+        if (!db || !userId) return;
+        setIsLoading(true);
+        setStatusMessage({ type: 'info', text: 'Purging database...' });
+
+        const collectionsToPurge = ['revenues', 'expenses', 'vendors'];
+        try {
+            for (const collectionName of collectionsToPurge) {
+                const collectionRef = collection(db, `/artifacts/${appId}/users/${userId}/${collectionName}`);
+                const querySnapshot = await getDocs(collectionRef);
+                const batch = writeBatch(db);
+                querySnapshot.forEach((doc) => batch.delete(doc.ref));
+                await batch.commit();
+            }
+            setStatusMessage({ type: 'success', text: 'Database purged successfully!' });
+        } catch (error) {
+            setStatusMessage({ type: 'error', text: `Error purging: ${error.message}` });
+        } finally {
+            setIsLoading(false);
+            setModal(null);
+        }
+    };
+
+    const handleImport = async (file) => {
+        if (!file || !db || !userId) return;
+        setIsLoading(true);
+        setStatusMessage({ type: 'info', text: 'Importing database...' });
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const data = JSON.parse(e.target.result);
+                if (!data.revenues || !data.expenses || !data.vendors) {
+                    throw new Error("Invalid backup file format.");
+                }
+
+                // Purge existing data first
+                const collectionsToPurge = ['revenues', 'expenses', 'vendors'];
+                for (const collectionName of collectionsToPurge) {
+                    const collectionRef = collection(db, `/artifacts/${appId}/users/${userId}/${collectionName}`);
+                    const qSnapshot = await getDocs(collectionRef);
+                    const pBatch = writeBatch(db);
+                    qSnapshot.forEach((doc) => pBatch.delete(doc.ref));
+                    await pBatch.commit();
+                }
+
+                const { revenues, expenses, vendors: vendorsToImport } = data;
+                
+                // Import vendors and create an ID map
+                const oldIdToNewIdMap = {};
+                const vendorsBatch = writeBatch(db);
+                const vendorsCollectionRef = collection(db, `/artifacts/${appId}/users/${userId}/vendors`);
+                vendorsToImport.forEach(vendor => {
+                    const oldId = vendor.id;
+                    const { id, ...vendorData } = vendor;
+                    const newDocRef = doc(vendorsCollectionRef);
+                    vendorsBatch.set(newDocRef, vendorData);
+                    oldIdToNewIdMap[oldId] = newDocRef.id;
+                });
+                await vendorsBatch.commit();
+
+                // Import expenses, updating vendorId using the map
+                const expensesBatch = writeBatch(db);
+                const expensesCollectionRef = collection(db, `/artifacts/${appId}/users/${userId}/expenses`);
+                expenses.forEach(expense => {
+                    const { id, vendorId, ...expenseData } = expense;
+                    const newVendorId = oldIdToNewIdMap[vendorId] || null;
+                    const newDocRef = doc(expensesCollectionRef);
+                    expensesBatch.set(newDocRef, { ...expenseData, vendorId: newVendorId });
+                });
+                await expensesBatch.commit();
+                
+                // Import revenues
+                const revenuesBatch = writeBatch(db);
+                const revenuesCollectionRef = collection(db, `/artifacts/${appId}/users/${userId}/revenues`);
+                revenues.forEach(revenue => {
+                    const { id, ...revenueData } = revenue;
+                    const newDocRef = doc(revenuesCollectionRef);
+                    revenuesBatch.set(newDocRef, revenueData);
+                });
+                await revenuesBatch.commit();
+
+                setStatusMessage({ type: 'success', text: 'Database imported successfully!' });
+            } catch (error) {
+                setStatusMessage({ type: 'error', text: `Import failed: ${error.message}` });
+            } finally {
+                setIsLoading(false);
+                setModal(null);
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    return (
+        <>
+            {statusMessage.text && (
+                <div className={`fixed top-24 right-8 z-50 p-4 rounded-lg shadow-lg text-white ${
+                    statusMessage.type === 'success' ? 'bg-green-600/80' : 
+                    statusMessage.type === 'error' ? 'bg-red-600/80' : 'bg-blue-600/80'
+                }`}>
+                    {statusMessage.text}
+                </div>
+            )}
+
+            <div className="relative" ref={dropdownRef}>
+                <button
+                    onClick={() => setIsOpen(!isOpen)}
+                    className="p-2 bg-gray-600 hover:bg-gray-700 rounded-full text-white transition-colors"
+                    aria-label="Database Actions"
+                >
+                    <SettingsIcon />
+                </button>
+
+                {isOpen && (
+                    <div className="absolute right-0 mt-2 w-56 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
+                        <div className="py-1">
+                            <button onClick={handleExport} className="block w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700">Export Database</button>
+                            <button onClick={() => { setModal('import'); setIsOpen(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700">Import Database</button>
+                            <button onClick={() => { setModal('purge'); setIsOpen(false); }} className="block w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-red-600/20">Purge Database</button>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {modal === 'purge' && (
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-center z-50 p-4">
+                    <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-md text-center border border-gray-700">
+                        <h2 className="text-2xl font-bold mb-4 text-white">Purge Database</h2>
+                        <p className="text-gray-300 mb-8">Are you sure? This will <span className="font-bold text-red-400">permanently delete all</span> revenues, expenses, and vendors. This action cannot be undone.</p>
+                        <div className="flex items-center justify-center gap-4">
+                            <button onClick={() => setModal(null)} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg">Cancel</button>
+                            <button onClick={handlePurge} disabled={isLoading} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-500">{isLoading ? "Purging..." : "Confirm Purge"}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
+            {modal === 'import' && <ImportModal onImport={handleImport} onCancel={() => setModal(null)} isLoading={isLoading} />}
+        </>
+    );
+}
+
+function ImportModal({ onImport, onCancel, isLoading }) {
+    const [file, setFile] = useState(null);
+
+    const handleFileChange = (e) => {
+        const selectedFile = e.target.files[0];
+        if (selectedFile && selectedFile.type === 'application/json') {
+            setFile(selectedFile);
+        } else {
+            setFile(null);
+        }
+    };
+    
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-center z-50 p-4">
+            <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700">
+                <h2 className="text-2xl font-bold mb-4 text-white text-center">Import Database</h2>
+                <p className="text-gray-300 mb-6 text-center">This will <span className="font-bold text-red-400">DELETE ALL EXISTING DATA</span> and replace it with data from the backup file. This action cannot be undone.</p>
+                <div className="mb-6">
+                    <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="import-file">Select Backup File (.json)</label>
+                    <input type="file" id="import-file" accept=".json" onChange={handleFileChange} className="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-700"/>
+                </div>
+                <div className="flex items-center justify-center gap-4">
+                    <button onClick={onCancel} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg">Cancel</button>
+                    <button onClick={() => onImport(file)} disabled={!file || isLoading} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-500">{isLoading ? "Importing..." : "Purge and Import"}</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+
+function DashboardView({ totals, revenues, expenses, allRevenues, allExpenses, formatCurrency, vendors, displayDateRange, db, userId, appId }) {
     const [expandedExpenseGroups, setExpandedExpenseGroups] = useState({});
     const [lineChartFilter, setLineChartFilter] = useState('rev_exp_profit');
 
@@ -1180,7 +1401,8 @@ function DashboardView({ totals, revenues, expenses, allRevenues, allExpenses, f
 
     return (
         <div className="space-y-8">
-            <div className="flex justify-end gap-4">
+            <div className="flex justify-end items-center gap-4">
+                 <DatabaseActions allRevenues={allRevenues} allExpenses={allExpenses} vendors={vendors} db={db} userId={userId} appId={appId} />
                  <button onClick={handlePdfDownload} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download PDF</button>
                  <button onClick={handleExcelDownload} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download Excel</button>
             </div>
@@ -2707,6 +2929,8 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
+
+
 
 
 
