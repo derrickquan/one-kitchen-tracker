@@ -1,4 +1,4 @@
-// v1.5.0 - Add database import, export, and purge functionality.
+// v1.5.3 - Correctly persist component state to fix input focus loss.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -19,7 +19,7 @@ import {
 // --- Helper Components & Icons (as SVGs to keep it in one file) ---
 
 const PlusIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 L 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
 );
 const EditIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
@@ -208,6 +208,11 @@ export default function App() {
     
     const [dateFilter, setDateFilter] = useState({ type: 'all', startDate: '', endDate: '' });
     const [reportTypeFilter, setReportTypeFilter] = useState('all');
+
+    // State for expense view filters, lifted from CrudView
+    const [expenseGroupBy, setExpenseGroupBy] = useState('category');
+    const [expenseCategoryFilter, setExpenseCategoryFilter] = useState('all');
+    const [expenseVendorFilter, setExpenseVendorFilter] = useState('');
 
 
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'one-kitchen-tracker';
@@ -492,23 +497,6 @@ export default function App() {
         return `${formatDate(start)} - ${formatDate(end)}`;
     }, [dateFilter]);
 
-    const MainContent = () => {
-        if (!isAuthReady || isLoading) return <LoadingSpinner />;
-        
-        return (
-            <div>
-                {
-                    {
-                        'dashboard': <DashboardView totals={totals} revenues={filteredRevenues} expenses={filteredExpenses} allRevenues={revenues} allExpenses={expenses} formatCurrency={formatCurrency} vendors={vendors} displayDateRange={displayDateRange} db={db} userId={userId} appId={appId} />,
-                        'revenue': <CrudView title="Revenue" data={filteredRevenues} db={db} userId={userId} appId={appId} collectionName="revenues" fields={['source', 'date', 'checkAmount', 'cashAmount', 'reportable']} formatCurrency={formatCurrency} />,
-                        'expenses': <CrudView title="Expenses" data={filteredExpenses} db={db} userId={userId} appId={appId} collectionName="expenses" fields={['date', 'vendorId', 'category', 'amount', 'paymentType', 'reportable', 'description']} formatCurrency={formatCurrency} vendors={vendors} />,
-                        'vendors': <CrudView title="Vendors" data={vendors} db={db} userId={userId} appId={appId} collectionName="vendors" fields={['name', 'category', 'contactPerson', 'email', 'phoneNumber', 'accountNumber']} formatCurrency={formatCurrency} />,
-                    }[view] || <div>Select a view</div>
-                }
-            </div>
-        )
-    };
-    
     const showFilter = ['dashboard', 'revenue', 'expenses'].includes(view);
 
     if (!isAuthReady) {
@@ -549,7 +537,37 @@ export default function App() {
                 </header>
             </div>
             <main className="container mx-auto p-4 md:p-8">
-                <MainContent />
+                {(!isAuthReady || isLoading) ? <LoadingSpinner /> : (
+                    <>
+                        <div style={{ display: view === 'dashboard' ? 'block' : 'none' }}>
+                            <DashboardView totals={totals} revenues={filteredRevenues} expenses={filteredExpenses} allRevenues={revenues} allExpenses={expenses} formatCurrency={formatCurrency} vendors={vendors} displayDateRange={displayDateRange} db={db} userId={userId} appId={appId} />
+                        </div>
+                        <div style={{ display: view === 'revenue' ? 'block' : 'none' }}>
+                            <CrudView title="Revenue" data={filteredRevenues} db={db} userId={userId} appId={appId} collectionName="revenues" fields={['source', 'date', 'checkAmount', 'cashAmount', 'reportable']} formatCurrency={formatCurrency} />
+                        </div>
+                        <div style={{ display: view === 'expenses' ? 'block' : 'none' }}>
+                            <CrudView title="Expenses" 
+                                data={filteredExpenses} 
+                                db={db} 
+                                userId={userId} 
+                                appId={appId} 
+                                collectionName="expenses" 
+                                fields={['date', 'vendorId', 'category', 'amount', 'paymentType', 'reportable', 'description']} 
+                                formatCurrency={formatCurrency} 
+                                vendors={vendors} 
+                                groupBy={expenseGroupBy}
+                                onGroupByChange={setExpenseGroupBy}
+                                categoryFilter={expenseCategoryFilter}
+                                onCategoryFilterChange={setExpenseCategoryFilter}
+                                vendorFilter={expenseVendorFilter}
+                                onVendorFilterChange={setExpenseVendorFilter}
+                            />
+                        </div>
+                        <div style={{ display: view === 'vendors' ? 'block' : 'none' }}>
+                            <CrudView title="Vendors" data={vendors} db={db} userId={userId} appId={appId} collectionName="vendors" fields={['name', 'category', 'contactPerson', 'email', 'phoneNumber', 'accountNumber']} formatCurrency={formatCurrency} />
+                        </div>
+                    </>
+                )}
             </main>
         </div>
     );
@@ -1534,7 +1552,11 @@ const GroupingControl = ({ groupBy, onGroupByChange }) => {
     );
 };
 
-function CrudView({ title, data, db, userId, appId, collectionName, fields, formatCurrency, vendors }) {
+function CrudView({ title, data, db, userId, appId, collectionName, fields, formatCurrency, vendors,
+    groupBy, onGroupByChange,
+    categoryFilter, onCategoryFilterChange,
+    vendorFilter, onVendorFilterChange
+}) {
     const [showForm, setShowForm] = useState(false);
     const [editingItem, setEditingItem] = useState(null);
     const [formData, setFormData] = useState({});
@@ -1548,9 +1570,6 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     const [showStatementUpload, setShowStatementUpload] = useState(false);
     const [wageFieldStatus, setWageFieldStatus] = useState({});
     const [showWageWarning, setShowWageWarning] = useState(false);
-    const [groupBy, setGroupBy] = useState('category');
-    const [categoryFilter, setCategoryFilter] = useState('all');
-    const [vendorFilter, setVendorFilter] = useState('');
 
     const getVendorName = (vendorId) => {
         if (!vendors || !vendorId) return 'N/A';
@@ -1559,7 +1578,9 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     };
 
     const handleGroupByChange = (newGroupBy) => {
-        setGroupBy(newGroupBy);
+        if (onGroupByChange) {
+            onGroupByChange(newGroupBy);
+        }
     };
 
     const getVendorNameFromItem = (item) => {
@@ -1639,15 +1660,17 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
     }, [locallyFilteredData, collectionName, groupBy, vendors]);
     
     useEffect(() => {
-        // This effect will now set the initial expanded state whenever the grouping changes.
+        // This effect preserves the expanded/collapsed state of groups across data changes.
         if (collectionName === 'expenses' && processedData && processedData.isGrouped) {
-             const allCollapsed = processedData.sortedKeys.reduce((acc, key) => {
-                acc[key] = false; // Default all groups to be collapsed
-                return acc;
-            }, {});
-            setExpandedGroups(allCollapsed);
-        } else {
-             setExpandedGroups({}); // Clear for non-grouped views or other collections
+            setExpandedGroups(prev => {
+                const newExpandedState = {};
+                for (const key of processedData.sortedKeys) {
+                    // If a group existed before in the previous state, keep its state (true/false).
+                    // If it's a new group, it will be undefined in `prev`, so default to collapsed (false).
+                    newExpandedState[key] = prev[key] || false;
+                }
+                return newExpandedState;
+            });
         }
     }, [processedData, collectionName]);
 
@@ -2432,7 +2455,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                                 <span className="text-sm font-semibold text-gray-400">Filter By:</span>
                                 <select
                                     value={categoryFilter}
-                                    onChange={(e) => setCategoryFilter(e.target.value)}
+                                    onChange={(e) => onCategoryFilterChange(e.target.value)}
                                     className="w-48 bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 >
                                     {expenseCategories.map(cat => (
@@ -2443,7 +2466,7 @@ function CrudView({ title, data, db, userId, appId, collectionName, fields, form
                                     type="text"
                                     placeholder="Filter by vendor name..."
                                     value={vendorFilter}
-                                    onChange={(e) => setVendorFilter(e.target.value)}
+                                    onChange={(e) => onVendorFilterChange(e.target.value)}
                                     className="w-48 bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 />
                             </div>
@@ -2929,9 +2952,6 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
-
-
-
 
 
 
