@@ -1,4 +1,4 @@
-// v1.5.3 - Correctly persist component state to fix input focus loss.
+// v1.5.4 - Backup DB reminder.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -829,6 +829,7 @@ function DatabaseActions({ allRevenues, allExpenses, vendors, db, userId, appId 
     const [isLoading, setIsLoading] = useState(false);
     const [statusMessage, setStatusMessage] = useState({ type: '', text: '' });
     const dropdownRef = useRef(null);
+    const [showBackupPrompt, setShowBackupPrompt] = useState(false);
 
     useEffect(() => {
         function handleClickOutside(event) {
@@ -847,6 +848,22 @@ function DatabaseActions({ allRevenues, allExpenses, vendors, db, userId, appId 
         }
     }, [statusMessage]);
 
+    useEffect(() => {
+        const lastBackupTimestamp = localStorage.getItem('oneKitchenLastBackup');
+        const threeDaysInMillis = 3 * 24 * 60 * 60 * 1000;
+
+        if (lastBackupTimestamp) {
+            const lastBackupDate = new Date(lastBackupTimestamp);
+            const now = new Date();
+            if (now.getTime() - lastBackupDate.getTime() > threeDaysInMillis) {
+                setShowBackupPrompt(true);
+            }
+        } else {
+            // If no backup has ever been made, prompt them.
+            setShowBackupPrompt(true);
+        }
+    }, []);
+
     const handleExport = () => {
         const exportData = {
             revenues: allRevenues,
@@ -860,6 +877,8 @@ function DatabaseActions({ allRevenues, allExpenses, vendors, db, userId, appId 
         link.download = `one-kitchen-backup-${date}.json`;
         link.click();
         setIsOpen(false);
+        localStorage.setItem('oneKitchenLastBackup', new Date().toISOString());
+        setShowBackupPrompt(false);
     };
 
     const handlePurge = async () => {
@@ -963,6 +982,19 @@ function DatabaseActions({ allRevenues, allExpenses, vendors, db, userId, appId 
                     statusMessage.type === 'error' ? 'bg-red-600/80' : 'bg-blue-600/80'
                 }`}>
                     {statusMessage.text}
+                </div>
+            )}
+
+            {showBackupPrompt && (
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-center z-50 p-4">
+                    <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-md text-center border border-gray-700">
+                        <h2 className="text-2xl font-bold mb-4 text-white">Backup Recommended</h2>
+                        <p className="text-gray-300 mb-8">It's been more than 3 days since your last backup. To protect your data, it's a good idea to export it now.</p>
+                        <div className="flex items-center justify-center gap-4">
+                            <button onClick={() => setShowBackupPrompt(false)} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg">Remind Me Later</button>
+                            <button onClick={handleExport} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-lg">Backup Now</button>
+                        </div>
+                    </div>
                 </div>
             )}
 
@@ -2952,6 +2984,7 @@ function StatementUploadModal({ onClose, onSave, existingExpenses, formatCurrenc
         </div>
     );
 }
+
 
 
 
