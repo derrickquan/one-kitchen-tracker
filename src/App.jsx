@@ -1,4 +1,4 @@
-// v1.5.4 - Backup DB reminder.
+// v1.5.5 - Date Filter change.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -386,10 +386,16 @@ export default function App() {
                     break;
                 case 'custom':
                     if (!dateFilter.startDate || !dateFilter.endDate) return data;
-                    start = new Date(dateFilter.startDate);
-                    end = new Date(dateFilter.endDate);
-                    start.setHours(0, 0, 0, 0);
-                    end.setHours(23, 59, 59, 999);
+                    //start = new Date(dateFilter.startDate);
+                    //end = new Date(dateFilter.endDate);
+                    //start.setHours(0, 0, 0, 0);
+                    //end.setHours(23, 59, 59, 999);
+    			const [sy, sm, sd] = dateFilter.startDate.split('-').map(Number);
+    			const [ey, em, ed] = dateFilter.endDate.split('-').map(Number);
+
+    			start = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
+    			end   = new Date(ey, em - 1, ed, 23, 59, 59, 999);
+
                     break;
                 default: // Handles trailing months like '2025-08'
                     const [year, month] = dateFilter.type.split('-').map(Number);
